@@ -72,6 +72,19 @@ const displayDate = (value) => {
   }
   return raw;
 };
+const dateValue = (value) => {
+  const raw = String(value || "");
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return new Date(`${iso[1]}-${iso[2]}-${iso[3]}T00:00:00`).getTime();
+  const dotted = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if (dotted) {
+    const year = dotted[3].length === 2 ? `20${dotted[3]}` : dotted[3];
+    return new Date(`${year}-${dotted[2].padStart(2, "0")}-${dotted[1].padStart(2, "0")}T00:00:00`).getTime();
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const rate = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `$${Number(value).toFixed(4)}`;
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const priceStalenessMinutes = 30;
@@ -219,12 +232,14 @@ function aggregatePositions(positions) {
       value_gbp: 0,
       cost_basis_gbp: 0,
       gain_gbp: 0,
+      sources: new Set(),
       children: []
     };
     item.quantity += Number(position.quantity || 0);
     item.value_gbp += Number(position.value_gbp || 0);
     item.cost_basis_gbp += Number(position.cost_basis_gbp || 0);
     item.gain_gbp += Number(position.gain_gbp || 0);
+    item.sources.add(position.source || "Unknown");
     item.children.push(position);
     grouped.set(position.ticker, item);
   }
@@ -235,6 +250,7 @@ function aggregatePositions(positions) {
       ...item,
       owner: owners.length > 1 ? "Both" : owners[0],
       account: accounts.length > 1 ? "Multiple" : accounts[0],
+      source: [...item.sources].includes("Yahoo") ? "Yahoo" : [...item.sources].join(", "),
       gain_pct: item.cost_basis_gbp ? item.gain_gbp / item.cost_basis_gbp : null
     };
   }).sort((a, b) => b.value_gbp - a.value_gbp);
@@ -415,11 +431,24 @@ function renderDashboard(portfolio) {
   const priceStatus = newestPrice
     ? `Prices refreshed ${new Date(newestPrice.fetched_at).toLocaleString(undefined, { hour12: false })}`
     : "Market prices not refreshed yet";
-  const sectorRows = Object.entries(portfolio.combined.reduce((acc, item) => {
+  const fxMetrics = portfolio.prices.get("GBPUSD=X")?.metrics || {};
+  const fxRows = [
+    ["28 days", fxMetrics.d28],
+    ["6 months", fxMetrics.m6],
+    ["1 year", fxMetrics.y1],
+    ["5 years", fxMetrics.y5],
+  ].map(([label, item]) => `<tr><td>${label}</td><td>${rate(item?.rate)}</td><td>${pctSigned(item?.change_pct)}</td></tr>`).join("");
+  const sectorMapRows = portfolio.combined.reduce((acc, item) => {
     const sector = sectorMap[item.ticker] || "Other";
-    acc[sector] = (acc[sector] || 0) + item.value_gbp;
+    acc[sector] ||= { value: 0, holdings: [] };
+    acc[sector].value += item.value_gbp;
+    acc[sector].holdings.push(item);
     return acc;
-  }, {})).sort((a, b) => b[1] - a[1]).map(([sector, value]) => `<tr><td>${sector}</td><td>${money(value)}</td><td>${pct(portfolio.accessibleTotal ? value / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
+  }, {});
+  const sectorRows = Object.entries(sectorMapRows).sort((a, b) => b[1].value - a[1].value).map(([sector, data]) => {
+    const holdingRows = data.holdings.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td></tr>`).join("");
+    return `<tr><td colspan="3"><details><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${holdingRows}</tbody></table></details></td></tr>`;
+  }).join("");
 
   el("dashboardView").innerHTML = `
     <section class="grid">
@@ -434,10 +463,11 @@ function renderDashboard(portfolio) {
         <tr><td>Cash</td><td>${money(portfolio.totalCash)} (${pct(cashPct)})</td></tr>
         <tr><td>FX guide</td><td>£1 = $${portfolio.fx.toFixed(4)}</td></tr>
       </tbody></table>
+      <details><summary>View FX history</summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table></details>
       <details><summary>View top five</summary><table class="compact"><tbody>${topFiveRows}</tbody></table></details>
       <details><summary>View cash split</summary><table class="compact"><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details>
       </div>
-      <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th>Area</th><th>Value</th><th>Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
+      <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
     <section class="card market-card">
       <div>
@@ -452,19 +482,24 @@ function renderDashboard(portfolio) {
 }
 
 function renderHoldings(portfolio) {
-  const rows = portfolio.combined.map((item) => `
-    <tr>
-      <td><strong>${escapeHtml(item.ticker)}</strong></td>
-      <td>${escapeHtml(item.holding)}</td>
-      <td>${escapeHtml(item.owner)}</td>
-      <td>${escapeHtml(item.account)}</td>
-      <td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-      <td>${money(item.value_gbp)}</td>
-      <td>${pctSigned(item.gain_pct)}</td>
-      <td>${escapeHtml(item.source || "-")}</td>
-      <td>${statusBadge(item.gain_pct)}</td>
-    </tr>
-  `).join("");
+  const rows = portfolio.combined.map((item) => {
+    const childRows = item.children.map((child) => `<tr class="child-row"><td></td><td>${escapeHtml(child.holding)}</td><td>${escapeHtml(child.owner)}</td><td>${escapeHtml(child.account)}</td><td>${Number(child.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td>${money(child.value_gbp)}</td><td>${pctSigned(child.gain_pct)}</td><td>${escapeHtml(child.source || "-")}</td><td></td></tr>`).join("");
+    const ownerCell = item.children.length > 1 ? `${escapeHtml(item.owner)} <span class="expand-hint">details below</span>` : escapeHtml(item.owner);
+    return `
+      <tr>
+        <td><strong>${escapeHtml(item.ticker)}</strong></td>
+        <td>${escapeHtml(item.holding)}</td>
+        <td>${ownerCell}</td>
+        <td>${escapeHtml(item.account)}</td>
+        <td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+        <td>${money(item.value_gbp)}</td>
+        <td>${pctSigned(item.gain_pct)}</td>
+        <td>${escapeHtml(item.source || "-")}</td>
+        <td>${statusBadge(item.gain_pct)}</td>
+      </tr>
+      ${item.children.length > 1 ? `<tr class="details-row"><td colspan="9"><details><summary>View individual holdings</summary><table class="compact"><tbody>${childRows}<tr class="total-row"><td colspan="4">${escapeHtml(item.ticker)} total</td><td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td>${money(item.value_gbp)}</td><td>${pctSigned(item.gain_pct)}</td><td colspan="2"></td></tr></tbody></table></details></td></tr>` : ""}
+    `;
+  }).join("");
   el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Owner</th><th>Account</th><th>Shares</th><th>Value</th><th>Gain/loss</th><th>Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
@@ -475,7 +510,9 @@ async function refreshMarketPrices() {
   if (status) status.textContent = "Refreshing market prices...";
   if (button) button.disabled = true;
   try {
-    const { data, error } = await supabaseClient.functions.invoke("refresh-prices");
+    const invokePromise = supabaseClient.functions.invoke("refresh-prices");
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Market refresh is taking too long. Please try again.")), 45000));
+    const { data, error } = await Promise.race([invokePromise, timeoutPromise]);
     if (error) throw error;
     await loadCloudLedger();
     renderAll();
@@ -722,7 +759,11 @@ async function writeAudit(action, tableName, recordId, oldValue, newValue) {
 
 function renderLedger() {
   const editCard = state.editingTransaction ? renderEditTransactionCard(state.editingTransaction) : "";
-  const rows = [...state.ledger.transactions].reverse().map((tx) => {
+  const rows = [...state.ledger.transactions].sort((a, b) => {
+    const dateDiff = dateValue(b.date) - dateValue(a.date);
+    if (dateDiff) return dateDiff;
+    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+  }).map((tx) => {
     const isCash = tx.type === "deposit" || tx.type === "withdrawal";
     const actions = tx.is_locked || !isConfigured
       ? '<span class="subtle">Locked</span>'

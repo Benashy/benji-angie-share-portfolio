@@ -4,11 +4,13 @@ create table if not exists public.market_prices (
   price numeric not null,
   currency text not null,
   market_time timestamptz,
+  metrics jsonb,
   fetched_at timestamptz not null default now(),
   source text not null default 'Yahoo'
 );
 
 alter table public.market_prices enable row level security;
+alter table public.market_prices add column if not exists metrics jsonb;
 
 grant select on public.market_prices to authenticated;
 
