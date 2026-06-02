@@ -253,6 +253,8 @@ function normalizeRow(row) {
 }
 
 function showDemoMode() {
+  document.body.classList.remove("auth-only");
+  document.title = "Benji and Angie's Investment Portfolio";
   el("authCard").classList.add("hidden");
   el("presencePanel").classList.remove("hidden");
   el("benjiPresence").textContent = "Benji demo";
@@ -261,9 +263,11 @@ function showDemoMode() {
 }
 
 function showAuth() {
+  document.body.classList.add("auth-only");
   el("authCard").classList.remove("hidden");
   el("presencePanel").classList.add("hidden");
   el("statusLine").textContent = "Sign in to load the shared cloud portfolio.";
+  document.querySelectorAll(".view").forEach((section) => section.classList.add("hidden"));
 }
 
 async function loadMember() {
@@ -331,6 +335,8 @@ function setupPresence() {
 }
 
 function renderAll() {
+  document.body.classList.remove("auth-only");
+  document.title = "Benji and Angie's Investment Portfolio";
   const portfolio = calculatePortfolio();
   el("headlineNetWorth").textContent = money(portfolio.netWorthTotal);
   if (isConfigured && state.session) {
@@ -735,13 +741,35 @@ function bindAuth() {
   el("signInButton").addEventListener("click", async () => {
     const email = el("emailInput").value.trim();
     const password = el("passwordInput").value;
-    const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
-    el("authMessage").textContent = error ? error.message : "Signed in.";
+    if (!email || !password) {
+      el("authMessage").textContent = "Enter email and password.";
+      return;
+    }
+    el("authMessage").textContent = "Checking sign-in...";
+    try {
+      const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      el("authMessage").textContent = error ? error.message : "Signed in. Loading...";
+    } catch (error) {
+      el("authMessage").textContent = `Sign-in failed: ${error.message}`;
+    }
   });
   el("magicLinkButton").addEventListener("click", async () => {
     const email = el("emailInput").value.trim();
-    const { error } = await supabaseClient.auth.signInWithOtp({ email });
-    el("authMessage").textContent = error ? error.message : "Magic link sent.";
+    if (!email) {
+      el("authMessage").textContent = "Enter email first.";
+      return;
+    }
+    el("authMessage").textContent = "Sending magic link...";
+    try {
+      const redirectTo = `${window.location.origin}${window.location.pathname}`;
+      const { error } = await supabaseClient.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: redirectTo }
+      });
+      el("authMessage").textContent = error ? error.message : "Magic link sent.";
+    } catch (error) {
+      el("authMessage").textContent = `Magic link failed: ${error.message}`;
+    }
   });
   el("signOutButton").addEventListener("click", async () => {
     if (supabaseClient) await supabaseClient.auth.signOut();
