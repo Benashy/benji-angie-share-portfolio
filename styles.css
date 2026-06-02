@@ -1,0 +1,306 @@
+:root {
+  --ink: #171411;
+  --muted: #746b61;
+  --line: #d8d0c5;
+  --panel: #fffdf8;
+  --gold: #b08d57;
+  --green: #147a48;
+  --amber: #9a6700;
+  --red: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at 80% 0%, rgba(176, 141, 87, .22), transparent 34%),
+    linear-gradient(180deg, #0f0e0d 0%, #24211e 19%, #e8dfd1 55%, #f7f4ed 100%);
+}
+
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 34px 24px 60px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 20px;
+  padding: 30px;
+  color: white;
+  background: linear-gradient(120deg, #0d0d0c 0%, #141312 45%, #1b2430 100%);
+  border: 1px solid rgba(217, 197, 159, .36);
+  border-top: 4px solid var(--gold);
+  border-radius: 8px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: 34px;
+}
+
+.hero p {
+  margin: 8px 0 0;
+  color: #d8d0c5;
+  font-size: 12px;
+}
+
+.hero-total {
+  text-align: right;
+}
+
+.hero-total div {
+  font-size: 38px;
+  font-weight: 760;
+}
+
+.hero-total span {
+  color: #d8d0c5;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+button,
+.button {
+  margin-top: 12px;
+  padding: 10px 14px;
+  color: white;
+  background: #171411;
+  border: 0;
+  border-radius: 6px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.secondary,
+.button.secondary {
+  color: #171411;
+  background: var(--gold);
+}
+
+button.small {
+  margin-top: 0;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+button.danger {
+  background: #7f1d1d;
+}
+
+button.nav {
+  margin-top: 0;
+  color: #f2eadc;
+  background: transparent;
+  border: 1px solid rgba(217, 197, 159, .34);
+  border-radius: 999px;
+  padding: 8px 13px;
+  font-size: 13px;
+}
+
+button.nav.active {
+  color: #171411;
+  background: var(--gold);
+}
+
+.presence-panel,
+.card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .96), rgba(255, 253, 248, .98));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(42, 35, 28, .08);
+}
+
+.presence-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 12px 16px;
+}
+
+.presence-panel span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.card {
+  padding: 16px;
+}
+
+.auth-card {
+  margin-top: 18px;
+  max-width: 520px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.grid.two {
+  grid-template-columns: 1fr 1fr;
+}
+
+h2 {
+  margin: 0 0 13px;
+  font-size: 20px;
+}
+
+h3 {
+  margin: 18px 0 10px;
+}
+
+.metric {
+  font-size: 26px;
+  font-weight: 760;
+}
+
+.subtle,
+.message,
+.footnote {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+label {
+  display: block;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 9px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+textarea {
+  min-height: 72px;
+}
+
+.button-row,
+.inline-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.split-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th,
+td {
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+th {
+  color: var(--muted);
+  background: #f5efe5;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.green {
+  color: var(--green);
+  background: #e7f5ed;
+}
+
+.amber {
+  color: var(--amber);
+  background: #fff4d8;
+}
+
+.red {
+  color: var(--red);
+  background: #fde7e5;
+}
+
+.neutral {
+  color: #2563eb;
+  background: #eaf1ff;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.view {
+  margin-top: 18px;
+}
+
+.transaction-total,
+.save-banner,
+.notice {
+  margin-top: 12px;
+  padding: 10px;
+  color: var(--muted);
+  background: #f7efe2;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.save-banner {
+  color: var(--green);
+  background: #e7f5ed;
+  font-weight: 800;
+}
+
+.conflict {
+  color: var(--red);
+  background: #fde7e5;
+  border-color: #f2aaa4;
+}
+
+@media (max-width: 900px) {
+  .hero,
+  .grid,
+  .grid.two,
+  .split-form {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-total {
+    text-align: left;
+  }
+}

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Benji and Angie's Investment Portfolio</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <h1>Benji and Angie's Investment Portfolio</h1>
+        <p id="statusLine">Loading portfolio...</p>
+        <nav>
+          <button class="nav active" data-view="dashboard">Dashboard</button>
+          <button class="nav" data-view="holdings">Holdings</button>
+          <button class="nav" data-view="transaction">New Transaction</button>
+          <button class="nav" data-view="ledger">Ledger</button>
+          <button class="nav" data-view="audit">Audit</button>
+        </nav>
+      </div>
+      <div class="hero-total">
+        <div id="headlineNetWorth">-</div>
+        <span>Headline net worth</span>
+      </div>
+    </section>
+
+    <section id="authCard" class="card auth-card hidden">
+      <h2>Sign In</h2>
+      <p class="subtle">Use the Supabase email/password account created for Benji or Angie.</p>
+      <label>Email</label>
+      <input id="emailInput" type="email" autocomplete="email">
+      <label>Password</label>
+      <input id="passwordInput" type="password" autocomplete="current-password">
+      <div class="button-row">
+        <button id="signInButton">Sign in</button>
+        <button id="magicLinkButton" class="secondary">Send magic link</button>
+      </div>
+      <p id="authMessage" class="message"></p>
+    </section>
+
+    <section id="presencePanel" class="presence-panel hidden">
+      <span id="benjiPresence">Benji offline</span>
+      <span id="angiePresence">Angie offline</span>
+      <button id="refreshCloudButton" class="secondary small hidden">New data available - refresh</button>
+      <button id="signOutButton" class="secondary small">Sign out</button>
+    </section>
+
+    <section id="dashboardView" class="view"></section>
+    <section id="holdingsView" class="view hidden"></section>
+    <section id="transactionView" class="view hidden"></section>
+    <section id="ledgerView" class="view hidden"></section>
+    <section id="auditView" class="view hidden"></section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
