@@ -197,12 +197,21 @@ button.nav.active {
 
 .hero .presence-panel {
   grid-column: 1 / -1;
-  justify-content: flex-end;
+  justify-content: flex-start;
   margin-top: 0;
   padding: 0;
   background: transparent;
   border: 0;
   box-shadow: none;
+}
+
+.hero .presence-panel button {
+  margin-top: 0;
+}
+
+.hero .presence-panel #marketDataSummary {
+  flex: 1 1 420px;
+  color: #f2eadc;
 }
 
 .hero .presence-panel span {
@@ -307,6 +316,14 @@ summary {
   font-weight: 700;
 }
 
+summary::marker {
+  color: var(--gold);
+}
+
+summary::-webkit-details-marker {
+  color: var(--gold);
+}
+
 summary span {
   display: inline-block;
   min-width: 110px;
@@ -356,6 +373,16 @@ table.compact {
   margin-top: 18px;
 }
 
+.gain-text {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.loss-text {
+  color: var(--red);
+  font-weight: 800;
+}
+
 .save-banner {
   margin: 0 0 12px;
   color: var(--green);
@@ -386,22 +413,80 @@ table.compact {
 
 th[data-sort] {
   cursor: pointer;
+  white-space: nowrap;
 }
 
 th[data-sort]::after {
   content: " ▾";
   color: var(--gold);
   font-size: 11px;
+  margin-left: 4px;
 }
 
-.owner-detail summary {
+.table-shell {
+  overflow-x: auto;
+}
+
+.holdings-table {
+  min-width: 1040px;
+  table-layout: fixed;
+}
+
+.holdings-table .col-ticker {
+  width: 8%;
+}
+
+.holdings-table .col-holding {
+  width: 23%;
+}
+
+.holdings-table .col-owner {
+  width: 10%;
+}
+
+.holdings-table .col-account {
+  width: 17%;
+}
+
+.holdings-table .col-shares {
+  width: 10%;
+}
+
+.holdings-table .col-value {
+  width: 11%;
+}
+
+.holdings-table .col-gain {
+  width: 10%;
+}
+
+.holdings-table .col-source {
+  width: 7%;
+}
+
+.holdings-table .col-status {
+  width: 8%;
+}
+
+.owner-toggle {
   display: inline-flex;
   gap: 5px;
   align-items: center;
+  margin: 0;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-weight: 700;
+}
+
+.toggle-arrow {
+  color: var(--gold);
 }
 
 .owner-breakdown {
-  width: min(520px, 74vw);
+  width: 100%;
   margin-top: 8px;
   padding: 8px;
   color: var(--ink);
@@ -414,7 +499,7 @@ th[data-sort]::after {
 .owner-breakdown-head,
 .owner-breakdown-row {
   display: grid;
-  grid-template-columns: 70px minmax(120px, 1fr) 72px 86px 78px;
+  grid-template-columns: 90px minmax(220px, 1fr) 110px 130px 110px;
   gap: 8px;
   align-items: center;
 }

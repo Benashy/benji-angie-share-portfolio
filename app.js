@@ -5,7 +5,7 @@ const supabaseClient = await createSupabaseClient();
 const state = {
   session: null,
   member: null,
-  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [] },
+  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [] },
   auditLog: [],
   activeView: "dashboard",
   dirtyCloud: false,
@@ -14,6 +14,10 @@ const state = {
   editingTransaction: null,
   saveMessage: "",
   saveArea: "",
+  marketRefreshMessage: "",
+  marketRefreshing: false,
+  autoRefreshTimer: null,
+  initialPriceRefreshDone: false,
   pendingCashConfirm: null,
   lastUndoneTransaction: null
 };
@@ -65,6 +69,7 @@ const usd = (value) => value === null || value === undefined || Number.isNaN(Num
 const pct = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${(Number(value) * 100).toFixed(1)}%`;
 const pctSigned = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(1)}%`;
 const todayIso = () => new Date().toISOString().slice(0, 10);
+const autoRefreshMinutes = 15;
 const displayDate = (value) => {
   const raw = String(value || "");
   const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -75,6 +80,20 @@ const displayDate = (value) => {
     return `${dotted[1].padStart(2, "0")}-${dotted[2].padStart(2, "0")}-${year}`;
   }
   return raw;
+};
+const displayDateTime = (value) => {
+  if (!value) return "-";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("en-GB", {
+    timeZone: "Europe/London",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).replace(",", "");
 };
 const dateValue = (value) => {
   const raw = String(value || "");
@@ -159,6 +178,39 @@ function marketPriceMap() {
 function priceIsFresh(row) {
   if (!row?.fetched_at) return false;
   return Date.now() - new Date(row.fetched_at).getTime() < priceStalenessMinutes * 60 * 1000;
+}
+
+function newestEquityPrice(prices) {
+  return [...prices.values()]
+    .filter((row) => row.ticker !== "GBPUSD=X" && row.fetched_at)
+    .sort((a, b) => new Date(b.fetched_at) - new Date(a.fetched_at))[0] || null;
+}
+
+function oldestMarketRefresh(prices) {
+  const rows = [...prices.values()].filter((row) => row.fetched_at);
+  if (!rows.length) return null;
+  return rows.sort((a, b) => new Date(a.fetched_at) - new Date(b.fetched_at))[0];
+}
+
+function marketRefreshIsStale(portfolio, minutes = autoRefreshMinutes) {
+  const equity = newestEquityPrice(portfolio.prices);
+  const fx = portfolio.prices.get("GBPUSD=X");
+  const rows = [equity, fx].filter((row) => row?.fetched_at);
+  if (rows.length < 2) return true;
+  return rows.some((row) => Date.now() - new Date(row.fetched_at).getTime() > minutes * 60 * 1000);
+}
+
+function marketFreshnessText(portfolio) {
+  const equity = newestEquityPrice(portfolio.prices);
+  const fx = portfolio.prices.get("GBPUSD=X");
+  const equityText = equity ? `Equities ${displayDateTime(equity.fetched_at)} UK` : "Equities not refreshed";
+  const fxText = fx?.fetched_at ? `FX ${displayDateTime(fx.fetched_at)} UK` : "FX not refreshed";
+  return `${equityText} · ${fxText} · Auto ${autoRefreshMinutes}m`;
+}
+
+function updateMarketDataSummary(portfolio) {
+  const target = el("marketDataSummary");
+  if (target) target.textContent = state.marketRefreshMessage || marketFreshnessText(portfolio);
 }
 
 function calculatePortfolio() {
@@ -316,6 +368,8 @@ async function loadApp() {
   }
   await loadMember();
   await loadCloudLedger();
+  const loadedPortfolio = calculatePortfolio();
+  if (!marketRefreshIsStale(loadedPortfolio)) await ensureMonthlySnapshot(loadedPortfolio);
   setupRealtime();
   setupPresence();
   renderAll();
@@ -330,6 +384,7 @@ async function loadDemoLedger() {
     pensions: (ledger.pensions || []).map(normalizeRow),
     audit_log: ledger.audit_log || [],
     market_prices: [],
+    net_worth_snapshots: [],
     fx: 1.3427
   };
 }
@@ -371,22 +426,26 @@ async function loadMember() {
 }
 
 async function loadCloudLedger() {
-  const [tx, manual, pensions, audit, prices] = await Promise.all([
+  const [tx, manual, pensions, audit, prices, snapshots] = await Promise.all([
     supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("audit_log").select("*").order("event_time", { ascending: false }).limit(100),
-    supabaseClient.from("market_prices").select("*").order("fetched_at", { ascending: false })
+    supabaseClient.from("market_prices").select("*").order("fetched_at", { ascending: false }),
+    supabaseClient.from("net_worth_snapshots").select("*").order("snapshot_date", { ascending: false })
   ]);
   for (const result of [tx, manual, pensions, audit, prices]) {
     if (result.error) throw result.error;
   }
+  const missingSnapshotTable = snapshots.error && ["42P01", "PGRST205"].includes(snapshots.error.code);
+  if (snapshots.error && !missingSnapshotTable) throw snapshots.error;
   state.ledger = {
     transactions: tx.data || [],
     manual_values: manual.data || [],
     pensions: pensions.data || [],
     audit_log: audit.data || [],
     market_prices: prices.data || [],
+    net_worth_snapshots: missingSnapshotTable ? [] : snapshots.data || [],
     fx: 1.3427
   };
   state.auditLog = audit.data || [];
@@ -396,7 +455,7 @@ async function loadCloudLedger() {
 
 function setupRealtime() {
   for (const channel of state.subscriptions) supabaseClient.removeChannel(channel);
-  state.subscriptions = ["portfolio_transactions", "manual_values", "pension_values", "market_prices"].map((tableName) => {
+  state.subscriptions = ["portfolio_transactions", "manual_values", "pension_values", "market_prices", "net_worth_snapshots"].map((tableName) => {
     const channel = supabaseClient.channel(`changes:${tableName}`).on(
       "postgres_changes",
       { event: "*", schema: "public", table: tableName },
@@ -437,7 +496,7 @@ function renderAll() {
   const portfolio = calculatePortfolio();
   el("headlineNetWorth").textContent = money(portfolio.netWorthTotal);
   if (isConfigured && state.session) {
-    el("statusLine").textContent = `Signed in as ${currentUserName()} · Shared cloud portfolio · ${new Date().toLocaleString()}`;
+    el("statusLine").textContent = `Signed in as ${currentUserName()} · Shared cloud portfolio · ${displayDateTime(new Date())} UK`;
   }
   renderDashboard(portfolio);
   renderHoldings(portfolio);
@@ -446,6 +505,8 @@ function renderAll() {
   renderAudit();
   showView(state.activeView);
   placePresenceInHeader();
+  updateMarketDataSummary(portfolio);
+  startAutoRefresh(portfolio);
 }
 
 function placePresenceInHeader() {
@@ -466,12 +527,6 @@ function renderDashboard(portfolio) {
     : '<p class="subtle">No pension values loaded.</p>';
   const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
   const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
-  const newestPrice = [...portfolio.prices.values()]
-    .filter((row) => row.ticker !== "GBPUSD=X" && row.fetched_at)
-    .sort((a, b) => new Date(b.fetched_at) - new Date(a.fetched_at))[0];
-  const priceStatus = newestPrice
-    ? `Prices refreshed ${new Date(newestPrice.fetched_at).toLocaleString(undefined, { hour12: false })}`
-    : "Market prices not refreshed yet";
   const fxMetrics = portfolio.prices.get("GBPUSD=X")?.metrics || {};
   const fxRows = [
     ["28 days", fxMetrics.d28],
@@ -492,7 +547,7 @@ function renderDashboard(portfolio) {
   }).join("");
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
-  const performanceRows = (items) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td>${pctSigned(item.gain_pct)}</td></tr>`).join("") || '<tr><td colspan="4">None</td></tr>';
+  const performanceRows = (items, tone) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td><span class="${tone}">${pctSigned(item.gain_pct)}</span></td></tr>`).join("") || '<tr><td colspan="4">None</td></tr>';
   const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td></tr>`).join("");
 
   el("dashboardView").innerHTML = `
@@ -506,34 +561,58 @@ function renderDashboard(portfolio) {
         <tr><td colspan="2"><details><summary><span>Top 5 concentration</span><span>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${topFiveRows}</tbody></table></details></td></tr>
         <tr><td>Equal-weight guide</td><td>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</td></tr>
         <tr><td colspan="2"><details><summary><span>Cash</span><span>${money(portfolio.totalCash)} (${pct(cashPct)})</span></summary><table class="compact"><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details></td></tr>
-        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table><button type="button" class="secondary small refresh-prices-action">Refresh market prices</button></details></td></tr>
+        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table></details></td></tr>
       </tbody></table>
       </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
-    <section class="card market-card">
-      <div>
-        <h2>Market Data</h2>
-        <p id="priceRefreshStatus" class="subtle">${priceStatus}</p>
-      </div>
-      <button type="button" class="secondary small refresh-prices-action">Refresh market prices</button>
-    </section>
     <section class="grid two">
-      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners)}</tbody></table><p class="footnote">Performance is measured since purchase using the ledger cost basis.</p></div>
-      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers)}</tbody></table><p class="footnote">Only holdings currently showing a loss are listed.</p></div>
+      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase using the ledger cost basis.</p></div>
+      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Only holdings currently showing a loss are listed.</p></div>
     </section>
-    <section class="card"><h2>Net Worth History</h2><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">Online history currently records the latest cloud snapshot; scheduled monthly snapshots can be added next.</p></section>
+    <section class="card"><details class="history-detail"><summary><span>Net Worth History</span><span>${state.ledger.net_worth_snapshots?.length || 0} monthly snapshots</span></summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
   `;
   bindRefreshButtons();
 }
 
 function buildNetWorthHistory(portfolio) {
+  const snapshots = (state.ledger.net_worth_snapshots || []).map((row) => ({
+    date: row.snapshot_date,
+    net_worth_total: Number(row.net_worth_total || 0),
+    accessible_total: Number(row.accessible_total || 0),
+    pension_total: Number(row.pension_total || 0)
+  }));
+  if (snapshots.length) return snapshots;
   return [{
     date: todayIso(),
     net_worth_total: portfolio.netWorthTotal,
     accessible_total: portfolio.accessibleTotal,
     pension_total: portfolio.pensionTotal
   }];
+}
+
+async function ensureMonthlySnapshot(portfolio) {
+  if (!isConfigured || !state.session) return;
+  const monthKey = todayIso().slice(0, 7);
+  if ((state.ledger.net_worth_snapshots || []).some((row) => row.month_key === monthKey)) return;
+  const snapshot = {
+    month_key: monthKey,
+    snapshot_date: todayIso(),
+    net_worth_total: portfolio.netWorthTotal,
+    accessible_total: portfolio.accessibleTotal,
+    invested_total: portfolio.totalPositions,
+    cash_total: portfolio.totalCash,
+    pension_total: portfolio.pensionTotal,
+    fx_rate: portfolio.fx,
+    created_by: state.session.user.id,
+    updated_by: state.session.user.id
+  };
+  const { error } = await supabaseClient.from("net_worth_snapshots").insert(snapshot);
+  if (error) {
+    if (["42P01", "PGRST205", "23505"].includes(error.code)) return;
+    throw error;
+  }
+  state.ledger.net_worth_snapshots = [snapshot, ...(state.ledger.net_worth_snapshots || [])];
 }
 
 function renderHoldings(portfolio) {
@@ -547,11 +626,23 @@ function renderHoldings(portfolio) {
         <span>${pctSigned(child.gain_pct)}</span>
       </div>
     `).join("");
+    const detailKey = `holding-${escapeHtml(item.ticker)}`;
     const ownerCell = item.children.length > 1
-      ? `<details class="owner-detail"><summary>${escapeHtml(item.owner)}</summary><div class="owner-breakdown"><div class="owner-breakdown-head"><span>Owner</span><span>Account</span><span>Shares</span><span>Value</span><span>Gain/loss</span></div>${childRows}<div class="owner-breakdown-row total"><span>${escapeHtml(item.ticker)} total</span><span></span><span>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span><span>${money(item.value_gbp)}</span><span>${pctSigned(item.gain_pct)}</span></div></div></details>`
+      ? `<button type="button" class="owner-toggle" data-detail="${detailKey}" aria-expanded="false"><span class="toggle-arrow">▸</span> ${escapeHtml(item.owner)}</button>`
       : escapeHtml(item.owner);
+    const detailRow = item.children.length > 1 ? `
+      <tr class="details-row holding-detail-row hidden" data-parent="${detailKey}">
+        <td colspan="9">
+          <div class="owner-breakdown">
+            <div class="owner-breakdown-head"><span>Owner</span><span>Account</span><span>Shares</span><span>Value</span><span>Gain/loss</span></div>
+            ${childRows}
+            <div class="owner-breakdown-row total"><span>${escapeHtml(item.ticker)} total</span><span></span><span>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span><span>${money(item.value_gbp)}</span><span>${pctSigned(item.gain_pct)}</span></div>
+          </div>
+        </td>
+      </tr>
+    ` : "";
     return `
-      <tr>
+      <tr class="holding-main-row" data-key="${detailKey}">
         <td data-sort-value="${escapeHtml(item.ticker)}"><strong>${escapeHtml(item.ticker)}</strong></td>
         <td data-sort-value="${escapeHtml(item.holding)}">${escapeHtml(item.holding)}</td>
         <td data-sort-value="${escapeHtml(item.owner)}">${ownerCell}</td>
@@ -562,23 +653,43 @@ function renderHoldings(portfolio) {
         <td data-sort-value="${escapeHtml(item.source || "-")}">${escapeHtml(item.source || "-")}</td>
         <td>${statusBadge(item.gain_pct)}</td>
       </tr>
+      ${detailRow}
     `;
   }).join("");
-  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><table class="sortable"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table><p class="footnote">Watch means the holding is currently up by less than 10% since purchase. Gain is 10% or more; Loss is below purchase cost.</p></section>`;
+  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-source"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Watch means the holding is currently up by less than 10% since purchase. Gain is 10% or more; Loss is below purchase cost.</p></section>`;
+  wireHoldingDetails();
   wireSortableTables();
+}
+
+function wireHoldingDetails() {
+  document.querySelectorAll(".owner-toggle").forEach((button) => {
+    button.addEventListener("click", () => {
+      const detail = document.querySelector(`[data-parent="${button.dataset.detail}"]`);
+      if (!detail) return;
+      const isOpen = !detail.classList.contains("hidden");
+      detail.classList.toggle("hidden", isOpen);
+      button.setAttribute("aria-expanded", String(!isOpen));
+      const arrow = button.querySelector(".toggle-arrow");
+      if (arrow) arrow.textContent = isOpen ? "▸" : "▾";
+    });
+  });
 }
 
 function bindRefreshButtons() {
   document.querySelectorAll(".refresh-prices-action").forEach((button) => {
-    button.addEventListener("click", () => refreshMarketPrices());
+    button.onclick = () => refreshMarketPrices();
   });
 }
 
 async function refreshMarketPrices(options = {}) {
-  const status = el("priceRefreshStatus");
   const buttons = [...document.querySelectorAll(".refresh-prices-action")];
   if (!supabaseClient || !state.session) return;
-  if (status && !options.quiet) status.textContent = "Refreshing market prices...";
+  if (state.marketRefreshing) return;
+  state.marketRefreshing = true;
+  if (!options.quiet) {
+    state.marketRefreshMessage = "Refreshing market prices...";
+    updateMarketDataSummary(calculatePortfolio());
+  }
   buttons.forEach((button) => {
     button.disabled = true;
   });
@@ -605,19 +716,38 @@ async function refreshMarketPrices(options = {}) {
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Market refresh is taking too long. Please try again.")), 45000));
     const data = await Promise.race([invokePromise, timeoutPromise]);
     await loadCloudLedger();
-    if (!options.quiet) renderAll();
+    await ensureMonthlySnapshot(calculatePortfolio());
     const refreshed = data?.updated ?? 0;
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
-    const nextStatus = el("priceRefreshStatus");
-    if (nextStatus) nextStatus.textContent = `Market prices refreshed. ${refreshed} updated.${skipped}`;
+    if (!options.quiet) {
+      state.marketRefreshMessage = `Market prices refreshed. ${refreshed} updated.${skipped} · ${marketFreshnessText(calculatePortfolio())}`;
+      renderAll();
+    }
   } catch (error) {
-    const nextStatus = el("priceRefreshStatus");
-    if (nextStatus) nextStatus.textContent = `Market refresh failed: ${error.message}`;
+    if (!options.quiet) {
+      state.marketRefreshMessage = `Market refresh failed: ${error.message} · ${marketFreshnessText(calculatePortfolio())}`;
+      updateMarketDataSummary(calculatePortfolio());
+    }
   } finally {
+    state.marketRefreshing = false;
     document.querySelectorAll(".refresh-prices-action").forEach((button) => {
       button.disabled = false;
     });
   }
+}
+
+function startAutoRefresh(portfolio) {
+  if (!isConfigured || !state.session) return;
+  if (!state.initialPriceRefreshDone && marketRefreshIsStale(portfolio)) {
+    state.initialPriceRefreshDone = true;
+    window.setTimeout(() => refreshMarketPrices({ auto: true }), 1200);
+  }
+  if (state.autoRefreshTimer) return;
+  state.autoRefreshTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible" && state.session) {
+      refreshMarketPrices({ auto: true });
+    }
+  }, autoRefreshMinutes * 60 * 1000);
 }
 
 function renderTransaction(portfolio) {
@@ -1149,7 +1279,8 @@ function wireSortableTables() {
     th.addEventListener("click", () => {
       const table = th.closest("table");
       const tbody = table.querySelector("tbody");
-      const rows = [...tbody.querySelectorAll("tr")].filter((row) => !row.classList.contains("details-row"));
+      const rows = [...tbody.querySelectorAll("tr.holding-main-row, tr:not(.details-row):not(.holding-main-row)")].filter((row) => !row.classList.contains("details-row"));
+      const detailRows = new Map([...tbody.querySelectorAll("tr.details-row")].map((row) => [row.dataset.parent, row]));
       const type = th.dataset.sort;
       const direction = th.dataset.direction === "asc" ? "desc" : "asc";
       table.querySelectorAll("th").forEach((header) => delete header.dataset.direction);
@@ -1163,7 +1294,10 @@ function wireSortableTables() {
         if (leftValue > rightValue) return direction === "asc" ? 1 : -1;
         return 0;
       });
-      rows.forEach((row) => tbody.appendChild(row));
+      rows.forEach((row) => {
+        tbody.appendChild(row);
+        if (row.dataset.key && detailRows.has(row.dataset.key)) tbody.appendChild(detailRows.get(row.dataset.key));
+      });
     });
   });
 }
@@ -1206,6 +1340,12 @@ function bindAuth() {
     state.saveMessage = "";
     state.saveArea = "";
     state.pendingCashConfirm = null;
+    state.marketRefreshMessage = "";
+    state.initialPriceRefreshDone = false;
+    if (state.autoRefreshTimer) {
+      window.clearInterval(state.autoRefreshTimer);
+      state.autoRefreshTimer = null;
+    }
     if (supabaseClient) await supabaseClient.auth.signOut();
   });
 }
