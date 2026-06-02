@@ -5,7 +5,7 @@ const supabaseClient = await createSupabaseClient();
 const state = {
   session: null,
   member: null,
-  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [] },
+  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [] },
   auditLog: [],
   activeView: "dashboard",
   dirtyCloud: false,
@@ -74,6 +74,7 @@ const displayDate = (value) => {
 };
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const priceStalenessMinutes = 30;
 
 function statusBadge(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '<span class="badge neutral">Unknown</span>';
@@ -105,10 +106,21 @@ function latestPensions() {
   return latestByKey(state.ledger.pensions, (row) => row.name);
 }
 
+function marketPriceMap() {
+  return new Map((state.ledger.market_prices || []).map((row) => [row.ticker, row]));
+}
+
+function priceIsFresh(row) {
+  if (!row?.fetched_at) return false;
+  return Date.now() - new Date(row.fetched_at).getTime() < priceStalenessMinutes * 60 * 1000;
+}
+
 function calculatePortfolio() {
   const grouped = new Map();
   const cash = new Map();
-  const fx = Number(state.ledger.fx || 1.3427);
+  const prices = marketPriceMap();
+  const fxRow = prices.get("GBPUSD=X");
+  const fx = Number(fxRow?.price || state.ledger.fx || 1.3427);
 
   for (const tx of activeRows(state.ledger.transactions)) {
     const key = `${tx.owner}|${tx.account}`;
@@ -165,12 +177,18 @@ function calculatePortfolio() {
     let valueGbp = Number(item.cost_basis_gbp || 0);
     if (manual) {
       valueGbp = Number(manual.value_gbp || 0);
+    } else if (prices.has(item.ticker)) {
+      const quote = prices.get(item.ticker);
+      const localValue = Number(quote.price || 0) * Number(item.quantity || 0);
+      valueGbp = quote.currency === "USD" ? localValue / fx : localValue;
     } else if (item.opening_value_gbp) {
       valueGbp = Number(item.opening_value_gbp);
     }
     const gainGbp = valueGbp - Number(item.cost_basis_gbp || 0);
     const gainPct = item.cost_basis_gbp ? gainGbp / item.cost_basis_gbp : null;
-    positions.push({ ...item, value_gbp: valueGbp, gain_gbp: gainGbp, gain_pct: gainPct });
+    const quote = prices.get(item.ticker);
+    const source = manual ? "Manual" : quote ? (priceIsFresh(quote) ? "Yahoo" : "Cached Yahoo") : item.opening_value_gbp ? "Opening value" : "Cost basis";
+    positions.push({ ...item, value_gbp: valueGbp, gain_gbp: gainGbp, gain_pct: gainPct, source });
   }
 
   const combined = aggregatePositions(positions);
@@ -186,7 +204,8 @@ function calculatePortfolio() {
     totalCash,
     accessibleTotal: totalPositions + totalCash,
     pensionTotal,
-    netWorthTotal: totalPositions + totalCash + pensionTotal
+    netWorthTotal: totalPositions + totalCash + pensionTotal,
+    prices
   };
 }
 
@@ -261,6 +280,7 @@ async function loadDemoLedger() {
     manual_values: (ledger.manual_values || []).map(normalizeRow),
     pensions: (ledger.pensions || []).map(normalizeRow),
     audit_log: ledger.audit_log || [],
+    market_prices: [],
     fx: 1.3427
   };
 }
@@ -300,13 +320,14 @@ async function loadMember() {
 }
 
 async function loadCloudLedger() {
-  const [tx, manual, pensions, audit] = await Promise.all([
+  const [tx, manual, pensions, audit, prices] = await Promise.all([
     supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
-    supabaseClient.from("audit_log").select("*").order("event_time", { ascending: false }).limit(100)
+    supabaseClient.from("audit_log").select("*").order("event_time", { ascending: false }).limit(100),
+    supabaseClient.from("market_prices").select("*").order("fetched_at", { ascending: false })
   ]);
-  for (const result of [tx, manual, pensions, audit]) {
+  for (const result of [tx, manual, pensions, audit, prices]) {
     if (result.error) throw result.error;
   }
   state.ledger = {
@@ -314,6 +335,7 @@ async function loadCloudLedger() {
     manual_values: manual.data || [],
     pensions: pensions.data || [],
     audit_log: audit.data || [],
+    market_prices: prices.data || [],
     fx: 1.3427
   };
   state.auditLog = audit.data || [];
@@ -323,7 +345,7 @@ async function loadCloudLedger() {
 
 function setupRealtime() {
   for (const channel of state.subscriptions) supabaseClient.removeChannel(channel);
-  state.subscriptions = ["portfolio_transactions", "manual_values", "pension_values"].map((tableName) => {
+  state.subscriptions = ["portfolio_transactions", "manual_values", "pension_values", "market_prices"].map((tableName) => {
     const channel = supabaseClient.channel(`changes:${tableName}`).on(
       "postgres_changes",
       { event: "*", schema: "public", table: tableName },
@@ -384,6 +406,12 @@ function renderDashboard(portfolio) {
     : '<p class="subtle">No pension values loaded.</p>';
   const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
   const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
+  const newestPrice = [...portfolio.prices.values()]
+    .filter((row) => row.ticker !== "GBPUSD=X" && row.fetched_at)
+    .sort((a, b) => new Date(b.fetched_at) - new Date(a.fetched_at))[0];
+  const priceStatus = newestPrice
+    ? `Prices refreshed ${new Date(newestPrice.fetched_at).toLocaleString(undefined, { hour12: false })}`
+    : "Market prices not refreshed yet";
   const sectorRows = Object.entries(portfolio.combined.reduce((acc, item) => {
     const sector = sectorMap[item.ticker] || "Other";
     acc[sector] = (acc[sector] || 0) + item.value_gbp;
@@ -408,7 +436,16 @@ function renderDashboard(portfolio) {
       </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th>Area</th><th>Value</th><th>Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
+    <section class="card market-card">
+      <div>
+        <h2>Market Data</h2>
+        <p id="priceRefreshStatus" class="subtle">${priceStatus}</p>
+      </div>
+      <button id="refreshPricesButton" class="secondary small">Refresh market prices</button>
+    </section>
   `;
+  const refreshButton = el("refreshPricesButton");
+  if (refreshButton) refreshButton.addEventListener("click", refreshMarketPrices);
 }
 
 function renderHoldings(portfolio) {
@@ -421,10 +458,35 @@ function renderHoldings(portfolio) {
       <td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
       <td>${money(item.value_gbp)}</td>
       <td>${pctSigned(item.gain_pct)}</td>
+      <td>${escapeHtml(item.source || "-")}</td>
       <td>${statusBadge(item.gain_pct)}</td>
     </tr>
   `).join("");
-  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Owner</th><th>Account</th><th>Shares</th><th>Value</th><th>Gain/loss</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Owner</th><th>Account</th><th>Shares</th><th>Value</th><th>Gain/loss</th><th>Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
+async function refreshMarketPrices() {
+  const status = el("priceRefreshStatus");
+  const button = el("refreshPricesButton");
+  if (!supabaseClient || !state.session) return;
+  if (status) status.textContent = "Refreshing market prices...";
+  if (button) button.disabled = true;
+  try {
+    const { data, error } = await supabaseClient.functions.invoke("refresh-prices");
+    if (error) throw error;
+    await loadCloudLedger();
+    renderAll();
+    const refreshed = data?.updated ?? 0;
+    const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
+    const nextStatus = el("priceRefreshStatus");
+    if (nextStatus) nextStatus.textContent = `Market prices refreshed. ${refreshed} updated.${skipped}`;
+  } catch (error) {
+    const nextStatus = el("priceRefreshStatus");
+    if (nextStatus) nextStatus.textContent = `Market refresh failed: ${error.message}`;
+  } finally {
+    const nextButton = el("refreshPricesButton");
+    if (nextButton) nextButton.disabled = false;
+  }
 }
 
 function renderTransaction(portfolio) {
