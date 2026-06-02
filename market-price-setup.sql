@@ -12,12 +12,22 @@ create table if not exists public.market_prices (
 alter table public.market_prices enable row level security;
 alter table public.market_prices add column if not exists metrics jsonb;
 
-grant select on public.market_prices to authenticated;
+grant select, insert, update on public.market_prices to authenticated;
 
 drop policy if exists "members can read market prices" on public.market_prices;
 
 create policy "members can read market prices" on public.market_prices
   for select using (public.is_app_member());
+
+drop policy if exists "members can insert market prices" on public.market_prices;
+drop policy if exists "members can update market prices" on public.market_prices;
+
+create policy "members can insert market prices" on public.market_prices
+  for insert with check (public.is_app_member());
+
+create policy "members can update market prices" on public.market_prices
+  for update using (public.is_app_member())
+  with check (public.is_app_member());
 
 do $$
 begin

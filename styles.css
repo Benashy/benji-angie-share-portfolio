@@ -91,6 +91,7 @@ body.auth-only .auth-card {
 }
 
 .hero {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 20px;
@@ -192,6 +193,20 @@ button.nav.active {
   gap: 8px;
   margin-top: 18px;
   padding: 12px 16px;
+}
+
+.hero .presence-panel {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  margin-top: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.hero .presence-panel span {
+  color: #d8d0c5;
 }
 
 .presence-panel span {
@@ -297,6 +312,19 @@ summary span {
   min-width: 110px;
 }
 
+.sector-detail summary,
+.card td > details > summary {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 120px 80px;
+  gap: 10px;
+  align-items: center;
+}
+
+.sector-detail summary span,
+.card td > details > summary span {
+  min-width: 0;
+}
+
 table.compact {
   margin-top: 8px;
   font-size: 12px;
@@ -326,6 +354,54 @@ table.compact {
   justify-content: space-between;
   gap: 16px;
   margin-top: 18px;
+}
+
+.save-banner {
+  margin-top: 18px;
+  color: var(--green);
+  background: #e7f5ed;
+  border: 1px solid #b7dfc7;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 800;
+}
+
+.cash-confirm-card {
+  margin-top: 18px;
+  border-top: 4px solid var(--gold);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.valuation-row td {
+  color: var(--muted);
+  background: #fbf7ef;
+}
+
+th[data-sort] {
+  cursor: pointer;
+}
+
+th[data-sort]::after {
+  content: " ▾";
+  color: var(--gold);
+  font-size: 11px;
+}
+
+.owner-detail summary {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.owner-detail table {
+  min-width: 640px;
 }
 
 th,

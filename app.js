@@ -11,7 +11,10 @@ const state = {
   dirtyCloud: false,
   subscriptions: [],
   presenceChannel: null,
-  editingTransaction: null
+  editingTransaction: null,
+  saveMessage: "",
+  pendingCashConfirm: null,
+  lastUndoneTransaction: null
 };
 
 const displayNames = ["Benji", "Angie"];
@@ -88,6 +91,30 @@ const rate = (value) => value === null || value === undefined || !Number.isFinit
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const priceStalenessMinutes = 30;
+const holdingNameMap = {
+  AAPL: "Apple",
+  AMZN: "Amazon",
+  AVGO: "Broadcom",
+  GOOGL: "Google / Alphabet",
+  HWM: "Howmet Aerospace",
+  IAG: "IAG",
+  JPM: "J P Morgan",
+  MA: "Mastercard",
+  MCK: "McKesson",
+  META: "Meta",
+  MS: "Morgan Stanley",
+  MSFT: "Microsoft",
+  NVDA: "Nvidia",
+  NVO: "Novo Nordisk",
+  PH: "Parker Hannifin",
+  SGLN: "iShares Physical Gold GBP",
+  TSLA: "Tesla",
+  TSM: "Taiwan Semiconductor",
+  UNH: "UnitedHealth Group",
+  V: "Visa",
+  VUAA: "Vanguard S&P 500 USD",
+  WXBT: "Bitcoin ETF"
+};
 
 function statusBadge(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '<span class="badge neutral">Unknown</span>';
@@ -117,6 +144,11 @@ function latestManualValue(ticker, owner, account) {
 
 function latestPensions() {
   return latestByKey(state.ledger.pensions, (row) => row.name);
+}
+
+function latestManualValueForAccount(account) {
+  const matches = activeRows(state.ledger.manual_values).filter((row) => row.account === account);
+  return matches[matches.length - 1] || null;
 }
 
 function marketPriceMap() {
@@ -412,12 +444,20 @@ function renderAll() {
   renderLedger(portfolio);
   renderAudit();
   showView(state.activeView);
+  placePresenceInHeader();
+}
+
+function placePresenceInHeader() {
+  const panel = el("presencePanel");
+  const hero = document.querySelector(".hero");
+  if (panel && hero && !hero.contains(panel)) hero.appendChild(panel);
 }
 
 function renderDashboard(portfolio) {
   const top = portfolio.combined[0];
   const topFiveValue = portfolio.combined.slice(0, 5).reduce((sum, item) => sum + item.value_gbp, 0);
   const cashPct = portfolio.accessibleTotal ? portfolio.totalCash / portfolio.accessibleTotal : 0;
+  const investedPct = portfolio.accessibleTotal ? portfolio.totalPositions / portfolio.accessibleTotal : 0;
   const pensions = latestPensions();
   const pensionRows = pensions.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${displayDate(p.date)}</td><td>${money(p.value_gbp)}</td></tr>`).join("");
   const pensionDetails = pensions.length
@@ -447,25 +487,26 @@ function renderDashboard(portfolio) {
   }, {});
   const sectorRows = Object.entries(sectorMapRows).sort((a, b) => b[1].value - a[1].value).map(([sector, data]) => {
     const holdingRows = data.holdings.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td></tr>`).join("");
-    return `<tr><td colspan="3"><details><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${holdingRows}</tbody></table></details></td></tr>`;
+    return `<tr><td colspan="3"><details class="sector-detail"><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${holdingRows}</tbody></table></details></td></tr>`;
   }).join("");
+  const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
+  const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
+  const performanceRows = (items) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td>${pctSigned(item.gain_pct)}</td></tr>`).join("") || '<tr><td colspan="4">None</td></tr>';
+  const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td></tr>`).join("");
 
   el("dashboardView").innerHTML = `
     <section class="grid">
-      <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} / Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
+      <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) / Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
       <div class="card"><div class="subtle">British Airways pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
       <div class="card"><div class="subtle">Top holding</div><div class="metric">${top ? escapeHtml(top.ticker) : "-"}</div><p class="subtle">${top ? `${money(top.value_gbp)} / ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-"}</p></div>
     </section>
     <section class="grid two">
       <div class="card"><h2>Portfolio Highlights</h2><table><tbody>
-        <tr><td>Top 5 concentration</td><td>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</td></tr>
+        <tr><td colspan="2"><details><summary><span>Top 5 concentration</span><span>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${topFiveRows}</tbody></table></details></td></tr>
         <tr><td>Equal-weight guide</td><td>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</td></tr>
-        <tr><td>Cash</td><td>${money(portfolio.totalCash)} (${pct(cashPct)})</td></tr>
-        <tr><td>FX guide</td><td>£1 = $${portfolio.fx.toFixed(4)}</td></tr>
+        <tr><td colspan="2"><details><summary><span>Cash</span><span>${money(portfolio.totalCash)} (${pct(cashPct)})</span></summary><table class="compact"><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details></td></tr>
+        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table></details></td></tr>
       </tbody></table>
-      <details><summary>View FX history</summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table></details>
-      <details><summary>View top five</summary><table class="compact"><tbody>${topFiveRows}</tbody></table></details>
-      <details><summary>View cash split</summary><table class="compact"><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details>
       </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
@@ -476,15 +517,29 @@ function renderDashboard(portfolio) {
       </div>
       <button id="refreshPricesButton" class="secondary small">Refresh market prices</button>
     </section>
+    <section class="grid two">
+      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners)}</tbody></table><p class="footnote">Performance is measured since purchase using the ledger cost basis.</p></div>
+      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers)}</tbody></table><p class="footnote">Only holdings currently showing a loss are listed.</p></div>
+    </section>
+    <section class="card"><h2>Net Worth History</h2><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">Online history currently records the latest cloud snapshot; scheduled monthly snapshots can be added next.</p></section>
   `;
   const refreshButton = el("refreshPricesButton");
   if (refreshButton) refreshButton.addEventListener("click", refreshMarketPrices);
 }
 
+function buildNetWorthHistory(portfolio) {
+  return [{
+    date: todayIso(),
+    net_worth_total: portfolio.netWorthTotal,
+    accessible_total: portfolio.accessibleTotal,
+    pension_total: portfolio.pensionTotal
+  }];
+}
+
 function renderHoldings(portfolio) {
   const rows = portfolio.combined.map((item) => {
     const childRows = item.children.map((child) => `<tr class="child-row"><td></td><td>${escapeHtml(child.holding)}</td><td>${escapeHtml(child.owner)}</td><td>${escapeHtml(child.account)}</td><td>${Number(child.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td>${money(child.value_gbp)}</td><td>${pctSigned(child.gain_pct)}</td><td>${escapeHtml(child.source || "-")}</td><td></td></tr>`).join("");
-    const ownerCell = item.children.length > 1 ? `${escapeHtml(item.owner)} <span class="expand-hint">details below</span>` : escapeHtml(item.owner);
+    const ownerCell = item.children.length > 1 ? `<details class="owner-detail"><summary>${escapeHtml(item.owner)}</summary><table class="compact"><tbody>${childRows}<tr class="total-row"><td colspan="4">${escapeHtml(item.ticker)} total</td><td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td>${money(item.value_gbp)}</td><td>${pctSigned(item.gain_pct)}</td><td colspan="2"></td></tr></tbody></table></details>` : escapeHtml(item.owner);
     return `
       <tr>
         <td><strong>${escapeHtml(item.ticker)}</strong></td>
@@ -497,10 +552,10 @@ function renderHoldings(portfolio) {
         <td>${escapeHtml(item.source || "-")}</td>
         <td>${statusBadge(item.gain_pct)}</td>
       </tr>
-      ${item.children.length > 1 ? `<tr class="details-row"><td colspan="9"><details><summary>View individual holdings</summary><table class="compact"><tbody>${childRows}<tr class="total-row"><td colspan="4">${escapeHtml(item.ticker)} total</td><td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td>${money(item.value_gbp)}</td><td>${pctSigned(item.gain_pct)}</td><td colspan="2"></td></tr></tbody></table></details></td></tr>` : ""}
     `;
   }).join("");
-  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Owner</th><th>Account</th><th>Shares</th><th>Value</th><th>Gain/loss</th><th>Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><table class="sortable"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table><p class="footnote">Watch means the holding is currently up by less than 10% since purchase. Gain is 10% or more; Loss is below purchase cost.</p></section>`;
+  wireSortableTables();
 }
 
 async function refreshMarketPrices() {
@@ -510,10 +565,27 @@ async function refreshMarketPrices() {
   if (status) status.textContent = "Refreshing market prices...";
   if (button) button.disabled = true;
   try {
-    const invokePromise = supabaseClient.functions.invoke("refresh-prices");
+    const invokePromise = fetch(`${config.supabaseUrl}/functions/v1/refresh-prices`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${state.session.access_token}`,
+        "apikey": config.supabaseAnonKey,
+        "Content-Type": "application/json"
+      },
+      body: "{}"
+    }).then(async (response) => {
+      const text = await response.text();
+      let payload = {};
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        payload = { error: text };
+      }
+      if (!response.ok) throw new Error(payload.error || text || `Refresh failed with status ${response.status}`);
+      return payload;
+    });
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Market refresh is taking too long. Please try again.")), 45000));
-    const { data, error } = await Promise.race([invokePromise, timeoutPromise]);
-    if (error) throw error;
+    const data = await Promise.race([invokePromise, timeoutPromise]);
     await loadCloudLedger();
     renderAll();
     const refreshed = data?.updated ?? 0;
@@ -532,8 +604,12 @@ async function refreshMarketPrices() {
 function renderTransaction(portfolio) {
   const disabled = !isConfigured ? "disabled" : "";
   const note = !isConfigured ? '<p class="notice">Demo mode is view-only. Configure Supabase to enable shared edits.</p>' : "";
+  const saved = state.saveMessage ? `<div class="save-banner">${escapeHtml(state.saveMessage)}</div>` : "";
+  const cashConfirm = state.pendingCashConfirm ? renderCashConfirm(portfolio) : "";
   el("transactionView").innerHTML = `
     ${note}
+    ${saved}
+    ${cashConfirm}
     <section class="grid two">
       <div class="card">
         <h2>Buy / Sell Equity</h2>
@@ -542,12 +618,13 @@ function renderTransaction(portfolio) {
           <label>Owner</label>${ownerSelect(disabled)}
           <label>Account</label><select name="account" required ${disabled}></select>
           <label>Action</label><select name="type" ${disabled}><option value="buy">Buy</option><option value="sell">Sell</option></select>
-          <label>Ticker</label><input name="ticker" required ${disabled}>
+          <label>Ticker</label><div class="lookup-row"><input name="ticker" class="ticker-input" required ${disabled}><button type="button" class="lookup-button" ${disabled}>Check</button></div><div class="lookup-status"></div>
           <label>Holding name</label><input name="holding" required ${disabled}>
           <label>Quantity of shares</label><input name="quantity" type="number" step="any" required ${disabled}>
           <label>Price per share</label><input name="price" type="number" step="any" required ${disabled}>
           <label>Currency</label><select name="currency" ${disabled}><option>USD</option><option>GBP</option></select>
           <label>Notes</label><textarea name="notes" ${disabled}></textarea>
+          <div class="transaction-total">Total transaction value: <strong>-</strong></div>
           <button ${disabled}>Add equity transaction</button>
         </form>
       </div>
@@ -561,6 +638,7 @@ function renderTransaction(portfolio) {
           <label>Cash amount</label><input name="amount" type="number" step="any" required ${disabled}>
           <label>Currency</label><select name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
           <label>Notes</label><textarea name="notes" ${disabled}></textarea>
+          <div class="transaction-total">Transaction preview: <strong>-</strong></div>
           <button ${disabled}>Add cash transaction</button>
         </form>
       </div>
@@ -579,6 +657,19 @@ function renderTransaction(portfolio) {
     </section>
   `;
   wireTransactionForms(portfolio);
+}
+
+function renderCashConfirm(portfolio) {
+  const pending = state.pendingCashConfirm;
+  const current = portfolio.cash.find((item) => item.owner === pending.owner && item.account === pending.account)?.amount || 0;
+  return `<section class="card cash-confirm-card">
+    <h2>Confirm Account Cash</h2>
+    <p class="subtle">Can you confirm the remaining cash balance in ${escapeHtml(pending.account)}? The app currently calculates ${money(current)}.</p>
+    <form id="cashConfirmForm">
+      <label>Remaining cash balance GBP</label><input name="cash_balance_gbp" type="number" step="any" required>
+      <div class="confirm-actions"><button>Confirm cash balance</button><button type="button" id="cashConfirmDisregard" class="secondary">Disregard</button></div>
+    </form>
+  </section>`;
 }
 
 function ownerSelect(disabled) {
@@ -602,9 +693,64 @@ function wireTransactionForms(portfolio) {
   if (!equityForm || !cashForm || !manualForm || !isConfigured) return;
   wireAccountFilter(equityForm);
   wireAccountFilter(cashForm);
+  wireTickerLookup(equityForm, portfolio);
+  wireTransactionPreview(equityForm, portfolio);
+  wireTransactionPreview(cashForm, portfolio);
   equityForm.addEventListener("submit", (event) => submitEquity(event, portfolio));
   cashForm.addEventListener("submit", (event) => submitCash(event, portfolio));
   setupManualForm(manualForm, portfolio);
+  const cashConfirmForm = el("cashConfirmForm");
+  if (cashConfirmForm) cashConfirmForm.addEventListener("submit", (event) => submitCashConfirmation(event, portfolio));
+  el("cashConfirmDisregard")?.addEventListener("click", () => {
+    state.pendingCashConfirm = null;
+    state.saveMessage = "Cash confirmation skipped.";
+    renderAll();
+  });
+}
+
+function wireTickerLookup(form, portfolio) {
+  const input = form.elements.ticker;
+  const holding = form.elements.holding;
+  const status = form.querySelector(".lookup-status");
+  const update = () => {
+    const ticker = input.value.trim().toUpperCase();
+    if (!ticker) return;
+    const quote = portfolio.prices.get(ticker);
+    const name = holdingNameMap[ticker] || quote?.yahoo_symbol || ticker;
+    if (!holding.value || holding.value === holdingNameMap[input.dataset.lastTicker]) holding.value = name;
+    input.dataset.lastTicker = ticker;
+    status.textContent = quote
+      ? `Checked: ${name} at ${quote.currency} ${Number(quote.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}`
+      : `Auto-filled ${name}. Refresh market prices if this is a new ticker.`;
+    status.className = quote ? "lookup-status ok" : "lookup-status warn";
+  };
+  input.addEventListener("blur", update);
+  form.querySelector(".lookup-button")?.addEventListener("click", update);
+}
+
+function wireTransactionPreview(form, portfolio) {
+  const target = form.querySelector(".transaction-total strong");
+  const update = () => {
+    if (!target) return;
+    if (form.id === "equityForm") {
+      const qty = Number(form.elements.quantity.value || 0);
+      const price = Number(form.elements.price.value || 0);
+      const ccy = form.elements.currency.value;
+      const ticker = form.elements.ticker.value.trim().toUpperCase() || "shares";
+      const local = qty * price;
+      const gbp = ccy === "USD" ? local / portfolio.fx : local;
+      const dollars = ccy === "USD" ? local : local * portfolio.fx;
+      target.textContent = `${qty.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${ticker} · ${ccy} ${local.toLocaleString(undefined, { maximumFractionDigits: 2 })} · approx ${money(gbp)} / ${usd(dollars)}`;
+    } else {
+      const amount = Number(form.elements.amount.value || 0);
+      const ccy = form.elements.currency.value;
+      const gbp = ccy === "USD" ? amount / portfolio.fx : amount;
+      const dollars = ccy === "USD" ? amount : amount * portfolio.fx;
+      target.textContent = `${ccy} ${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} · approx ${money(gbp)} / ${usd(dollars)}`;
+    }
+  };
+  ["input", "change"].forEach((eventName) => form.addEventListener(eventName, update));
+  update();
 }
 
 function setupManualForm(form, portfolio) {
@@ -651,7 +797,43 @@ async function submitEquity(event, portfolio) {
     updated_by: state.session.user.id
   };
   await insertRow("portfolio_transactions", row, "add");
+  state.saveMessage = "Equity transaction added. Your accounts have been updated.";
+  state.pendingCashConfirm = { owner: data.owner, account: data.account };
   form.reset();
+  await loadCloudLedger();
+  renderAll();
+}
+
+async function submitCashConfirmation(event, portfolio) {
+  event.preventDefault();
+  if (!state.pendingCashConfirm) return;
+  const form = event.currentTarget;
+  const target = Number(new FormData(form).get("cash_balance_gbp") || 0);
+  const pending = state.pendingCashConfirm;
+  const current = portfolio.cash.find((item) => item.owner === pending.owner && item.account === pending.account)?.amount || 0;
+  const adjustment = target - current;
+  if (Math.abs(adjustment) > 0.005) {
+    await insertRow("portfolio_transactions", {
+      date: todayIso(),
+      type: adjustment >= 0 ? "deposit" : "withdrawal",
+      owner: pending.owner,
+      account: pending.account,
+      ticker: "CASH",
+      holding: "Cash",
+      quantity: 0,
+      price: 0,
+      currency: "GBP",
+      amount_gbp: Math.abs(adjustment),
+      cost_basis_gbp: null,
+      fees_gbp: 0,
+      notes: "Cash balance confirmation adjustment",
+      is_locked: false,
+      created_by: state.session.user.id,
+      updated_by: state.session.user.id
+    }, "cash_reconcile");
+  }
+  state.pendingCashConfirm = null;
+  state.saveMessage = "Cash balance confirmed.";
   await loadCloudLedger();
   renderAll();
 }
@@ -680,6 +862,7 @@ async function submitCash(event, portfolio) {
     updated_by: state.session.user.id
   };
   await insertRow("portfolio_transactions", row, "add");
+  state.saveMessage = "Cash transaction added. Your accounts have been updated.";
   form.reset();
   await loadCloudLedger();
   renderAll();
@@ -691,6 +874,13 @@ async function submitManual(event, portfolio) {
   const data = Object.fromEntries(new FormData(form).entries());
   const entered = Number(data.value);
   const valueGbp = data.currency === "USD" ? entered / portfolio.fx : entered;
+  const currentGbp = data.kind === "crypto"
+    ? Number(latestManualValueForAccount(data.account)?.value_gbp || 0)
+    : Number(latestPensions().find((row) => row.name === data.account)?.value_gbp || 0);
+  if (currentGbp && Math.abs(valueGbp - currentGbp) / currentGbp > 0.10) {
+    const ok = confirm(`Just be aware this manual value changes by more than 10%. Current value is ${money(currentGbp)}. Save anyway?`);
+    if (!ok) return;
+  }
   if (data.kind === "crypto") {
     await insertRow("manual_values", {
       date: data.date,
@@ -715,6 +905,7 @@ async function submitManual(event, portfolio) {
       updated_by: state.session.user.id
     }, "manual_update");
   }
+  state.saveMessage = "Manual value saved. Your accounts have been updated.";
   form.reset();
   await loadCloudLedger();
   renderAll();
@@ -740,9 +931,38 @@ async function updateRowWithVersion(tableName, row, patch, action) {
 async function softDeleteTransaction(id) {
   const row = state.ledger.transactions.find((item) => item.id === id);
   if (!row || row.is_locked) return;
+  state.lastUndoneTransaction = row;
   await updateRowWithVersion("portfolio_transactions", row, { deleted_at: new Date().toISOString(), deleted_by: state.session.user.id }, "soft_delete");
   await loadCloudLedger();
   renderAll();
+}
+
+async function undoLatestTransaction() {
+  const row = [...activeRows(state.ledger.transactions)].reverse().find((item) => !item.is_locked);
+  if (!row) return;
+  state.lastUndoneTransaction = row;
+  await softDeleteTransaction(row.id);
+}
+
+async function redoLatestTransaction() {
+  if (!state.lastUndoneTransaction) return;
+  const { id, deleted_at, deleted_by, created_at, updated_at, ...row } = state.lastUndoneTransaction;
+  await insertRow("portfolio_transactions", { ...row, is_locked: false, created_by: state.session.user.id, updated_by: state.session.user.id }, "redo");
+  state.lastUndoneTransaction = null;
+  state.saveMessage = "Latest transaction restored.";
+  await loadCloudLedger();
+  renderAll();
+}
+
+function downloadLedgerBackup() {
+  const data = JSON.stringify(state.ledger, null, 2);
+  const blob = new Blob([data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `portfolio-ledger-backup-${todayIso()}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 async function writeAudit(action, tableName, recordId, oldValue, newValue) {
@@ -759,7 +979,7 @@ async function writeAudit(action, tableName, recordId, oldValue, newValue) {
 
 function renderLedger() {
   const editCard = state.editingTransaction ? renderEditTransactionCard(state.editingTransaction) : "";
-  const rows = [...state.ledger.transactions].sort((a, b) => {
+  const transactionRows = [...state.ledger.transactions].sort((a, b) => {
     const dateDiff = dateValue(b.date) - dateValue(a.date);
     if (dateDiff) return dateDiff;
     return new Date(b.created_at || 0) - new Date(a.created_at || 0);
@@ -783,7 +1003,16 @@ function renderLedger() {
       </tr>
     `;
   }).join("");
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2><table><thead><tr><th>Date</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  const manualRows = [
+    ...activeRows(state.ledger.manual_values).map((row) => ({ date: row.date, type: "manual valuation", owner: row.owner, account: row.account, ticker: row.ticker, quantity: "-", price: "-", amount: row.value_gbp, currency: row.currency_entered || "GBP" })),
+    ...activeRows(state.ledger.pensions).map((row) => ({ date: row.date, type: "pension valuation", owner: "Benji", account: row.name, ticker: "PENSION", quantity: "-", price: "-", amount: row.value_gbp, currency: "GBP" }))
+  ].sort((a, b) => dateValue(b.date) - dateValue(a.date)).map((row) => `
+    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.currency)}</td><td><span class="subtle">Audit</span></td></tr>
+  `).join("");
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2><p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><button id="undoLatestButton" class="secondary small">Undo latest transaction</button><button id="redoLatestButton" class="secondary small">Redo latest transaction</button></div><table style="margin-top:12px"><thead><tr><th>Date</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></section>`;
+  el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
+  el("undoLatestButton")?.addEventListener("click", undoLatestTransaction);
+  el("redoLatestButton")?.addEventListener("click", redoLatestTransaction);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
     renderLedger();
@@ -877,6 +1106,30 @@ function showView(view) {
   el(`${view}View`).classList.remove("hidden");
 }
 
+function wireSortableTables() {
+  document.querySelectorAll("table.sortable th[data-sort]").forEach((th, index) => {
+    th.addEventListener("click", () => {
+      const table = th.closest("table");
+      const tbody = table.querySelector("tbody");
+      const rows = [...tbody.querySelectorAll("tr")].filter((row) => !row.classList.contains("details-row"));
+      const type = th.dataset.sort;
+      const direction = th.dataset.direction === "asc" ? "desc" : "asc";
+      table.querySelectorAll("th").forEach((header) => delete header.dataset.direction);
+      th.dataset.direction = direction;
+      rows.sort((a, b) => {
+        const left = a.children[index]?.innerText || "";
+        const right = b.children[index]?.innerText || "";
+        const leftValue = type === "number" ? Number(left.replace(/[^0-9.-]/g, "")) : left.toLowerCase();
+        const rightValue = type === "number" ? Number(right.replace(/[^0-9.-]/g, "")) : right.toLowerCase();
+        if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
+        if (leftValue > rightValue) return direction === "asc" ? 1 : -1;
+        return 0;
+      });
+      rows.forEach((row) => tbody.appendChild(row));
+    });
+  });
+}
+
 function bindAuth() {
   el("signInButton").addEventListener("click", async () => {
     const email = el("emailInput").value.trim();
@@ -912,6 +1165,8 @@ function bindAuth() {
     }
   });
   el("signOutButton").addEventListener("click", async () => {
+    state.saveMessage = "";
+    state.pendingCashConfirm = null;
     if (supabaseClient) await supabaseClient.auth.signOut();
   });
 }
