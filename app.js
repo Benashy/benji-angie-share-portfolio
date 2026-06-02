@@ -61,6 +61,17 @@ const usd = (value) => value === null || value === undefined || Number.isNaN(Num
 const pct = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${(Number(value) * 100).toFixed(1)}%`;
 const pctSigned = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(1)}%`;
 const todayIso = () => new Date().toISOString().slice(0, 10);
+const displayDate = (value) => {
+  const raw = String(value || "");
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[3]}-${iso[2]}-${iso[1]}`;
+  const dotted = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if (dotted) {
+    const year = dotted[3].length === 2 ? `20${dotted[3]}` : dotted[3];
+    return `${dotted[1].padStart(2, "0")}-${dotted[2].padStart(2, "0")}-${year}`;
+  }
+  return raw;
+};
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -121,13 +132,17 @@ function calculatePortfolio() {
       ticker: tx.ticker,
       holding: tx.holding || tx.ticker,
       quantity: 0,
-      cost_basis_gbp: 0
+      cost_basis_gbp: 0,
+      opening_value_gbp: 0
     };
     const quantity = Number(tx.quantity || 0);
     if (tx.type === "opening" || tx.type === "buy") {
       item.quantity += quantity;
       const cost = tx.cost_basis_gbp ?? ((quantity * Number(tx.price || 0)) / (tx.currency === "USD" ? fx : 1));
       item.cost_basis_gbp += Number(cost || 0);
+      if (tx.type === "opening" && tx.opening_value_gbp !== null && tx.opening_value_gbp !== undefined) {
+        item.opening_value_gbp += Number(tx.opening_value_gbp || 0);
+      }
       if (tx.type === "buy") {
         cashValue.amount -= Number(cost || 0);
         cash.set(key, cashValue);
@@ -344,6 +359,7 @@ function setupPresence() {
 function renderAll() {
   document.body.classList.remove("auth-only");
   document.title = "Benji and Angie's Investment Portfolio";
+  el("authCard").classList.add("hidden");
   const portfolio = calculatePortfolio();
   el("headlineNetWorth").textContent = money(portfolio.netWorthTotal);
   if (isConfigured && state.session) {
@@ -361,6 +377,13 @@ function renderDashboard(portfolio) {
   const top = portfolio.combined[0];
   const topFiveValue = portfolio.combined.slice(0, 5).reduce((sum, item) => sum + item.value_gbp, 0);
   const cashPct = portfolio.accessibleTotal ? portfolio.totalCash / portfolio.accessibleTotal : 0;
+  const pensions = latestPensions();
+  const pensionRows = pensions.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${displayDate(p.date)}</td><td>${money(p.value_gbp)}</td></tr>`).join("");
+  const pensionDetails = pensions.length
+    ? `<details><summary>View pension lines</summary><table class="compact"><thead><tr><th>Pension</th><th>Date</th><th>Value</th></tr></thead><tbody>${pensionRows}<tr class="total-row"><td colspan="2">British Airways pension total</td><td>${money(portfolio.pensionTotal)}</td></tr></tbody></table></details>`
+    : '<p class="subtle">No pension values loaded.</p>';
+  const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
+  const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
   const sectorRows = Object.entries(portfolio.combined.reduce((acc, item) => {
     const sector = sectorMap[item.ticker] || "Other";
     acc[sector] = (acc[sector] || 0) + item.value_gbp;
@@ -370,15 +393,19 @@ function renderDashboard(portfolio) {
   el("dashboardView").innerHTML = `
     <section class="grid">
       <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} / Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
-      <div class="card"><div class="subtle">British Airways pension</div><div class="metric">${money(portfolio.pensionTotal)}</div><p class="subtle">${latestPensions().map((p) => `${escapeHtml(p.name)} ${money(p.value_gbp)}`).join("<br>")}</p></div>
+      <div class="card"><div class="subtle">British Airways pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
       <div class="card"><div class="subtle">Top holding</div><div class="metric">${top ? escapeHtml(top.ticker) : "-"}</div><p class="subtle">${top ? `${money(top.value_gbp)} / ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-"}</p></div>
     </section>
     <section class="grid two">
       <div class="card"><h2>Portfolio Highlights</h2><table><tbody>
         <tr><td>Top 5 concentration</td><td>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</td></tr>
         <tr><td>Equal-weight guide</td><td>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</td></tr>
+        <tr><td>Cash</td><td>${money(portfolio.totalCash)} (${pct(cashPct)})</td></tr>
         <tr><td>FX guide</td><td>£1 = $${portfolio.fx.toFixed(4)}</td></tr>
-      </tbody></table></div>
+      </tbody></table>
+      <details><summary>View top five</summary><table class="compact"><tbody>${topFiveRows}</tbody></table></details>
+      <details><summary>View cash split</summary><table class="compact"><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details>
+      </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th>Area</th><th>Value</th><th>Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
   `;
@@ -637,7 +664,7 @@ function renderLedger() {
       : `<div class="inline-row"><button class="secondary small" data-edit="${tx.id}">Edit</button><button class="danger small" data-delete="${tx.id}">Delete</button></div>`;
     return `
       <tr class="${tx.deleted_at ? "deleted" : ""}">
-        <td>${escapeHtml(tx.date)}</td>
+        <td>${displayDate(tx.date)}</td>
         <td>${escapeHtml(tx.type)}</td>
         <td>${escapeHtml(tx.owner)}</td>
         <td>${escapeHtml(tx.account)}</td>

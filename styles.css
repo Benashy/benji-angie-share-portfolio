@@ -245,6 +245,27 @@ table {
   font-size: 14px;
 }
 
+details {
+  margin-top: 10px;
+}
+
+summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+table.compact {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.total-row td {
+  border-top: 3px double var(--gold);
+  font-weight: 760;
+}
+
 th,
 td {
   padding: 9px 10px;
