@@ -13,6 +13,7 @@ const state = {
   presenceChannel: null,
   editingTransaction: null,
   saveMessage: "",
+  saveArea: "",
   pendingCashConfirm: null,
   lastUndoneTransaction: null
 };
@@ -505,7 +506,7 @@ function renderDashboard(portfolio) {
         <tr><td colspan="2"><details><summary><span>Top 5 concentration</span><span>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${topFiveRows}</tbody></table></details></td></tr>
         <tr><td>Equal-weight guide</td><td>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</td></tr>
         <tr><td colspan="2"><details><summary><span>Cash</span><span>${money(portfolio.totalCash)} (${pct(cashPct)})</span></summary><table class="compact"><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details></td></tr>
-        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table></details></td></tr>
+        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table><button type="button" class="secondary small refresh-prices-action">Refresh market prices</button></details></td></tr>
       </tbody></table>
       </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
@@ -515,7 +516,7 @@ function renderDashboard(portfolio) {
         <h2>Market Data</h2>
         <p id="priceRefreshStatus" class="subtle">${priceStatus}</p>
       </div>
-      <button id="refreshPricesButton" class="secondary small">Refresh market prices</button>
+      <button type="button" class="secondary small refresh-prices-action">Refresh market prices</button>
     </section>
     <section class="grid two">
       <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners)}</tbody></table><p class="footnote">Performance is measured since purchase using the ledger cost basis.</p></div>
@@ -523,8 +524,7 @@ function renderDashboard(portfolio) {
     </section>
     <section class="card"><h2>Net Worth History</h2><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">Online history currently records the latest cloud snapshot; scheduled monthly snapshots can be added next.</p></section>
   `;
-  const refreshButton = el("refreshPricesButton");
-  if (refreshButton) refreshButton.addEventListener("click", refreshMarketPrices);
+  bindRefreshButtons();
 }
 
 function buildNetWorthHistory(portfolio) {
@@ -538,18 +538,28 @@ function buildNetWorthHistory(portfolio) {
 
 function renderHoldings(portfolio) {
   const rows = portfolio.combined.map((item) => {
-    const childRows = item.children.map((child) => `<tr class="child-row"><td></td><td>${escapeHtml(child.holding)}</td><td>${escapeHtml(child.owner)}</td><td>${escapeHtml(child.account)}</td><td>${Number(child.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td>${money(child.value_gbp)}</td><td>${pctSigned(child.gain_pct)}</td><td>${escapeHtml(child.source || "-")}</td><td></td></tr>`).join("");
-    const ownerCell = item.children.length > 1 ? `<details class="owner-detail"><summary>${escapeHtml(item.owner)}</summary><table class="compact"><tbody>${childRows}<tr class="total-row"><td colspan="4">${escapeHtml(item.ticker)} total</td><td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td>${money(item.value_gbp)}</td><td>${pctSigned(item.gain_pct)}</td><td colspan="2"></td></tr></tbody></table></details>` : escapeHtml(item.owner);
+    const childRows = item.children.map((child) => `
+      <div class="owner-breakdown-row">
+        <span>${escapeHtml(child.owner)}</span>
+        <span>${escapeHtml(child.account)}</span>
+        <span>${Number(child.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+        <span>${money(child.value_gbp)}</span>
+        <span>${pctSigned(child.gain_pct)}</span>
+      </div>
+    `).join("");
+    const ownerCell = item.children.length > 1
+      ? `<details class="owner-detail"><summary>${escapeHtml(item.owner)}</summary><div class="owner-breakdown"><div class="owner-breakdown-head"><span>Owner</span><span>Account</span><span>Shares</span><span>Value</span><span>Gain/loss</span></div>${childRows}<div class="owner-breakdown-row total"><span>${escapeHtml(item.ticker)} total</span><span></span><span>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span><span>${money(item.value_gbp)}</span><span>${pctSigned(item.gain_pct)}</span></div></div></details>`
+      : escapeHtml(item.owner);
     return `
       <tr>
-        <td><strong>${escapeHtml(item.ticker)}</strong></td>
-        <td>${escapeHtml(item.holding)}</td>
-        <td>${ownerCell}</td>
-        <td>${escapeHtml(item.account)}</td>
-        <td>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-        <td>${money(item.value_gbp)}</td>
-        <td>${pctSigned(item.gain_pct)}</td>
-        <td>${escapeHtml(item.source || "-")}</td>
+        <td data-sort-value="${escapeHtml(item.ticker)}"><strong>${escapeHtml(item.ticker)}</strong></td>
+        <td data-sort-value="${escapeHtml(item.holding)}">${escapeHtml(item.holding)}</td>
+        <td data-sort-value="${escapeHtml(item.owner)}">${ownerCell}</td>
+        <td data-sort-value="${escapeHtml(item.account)}">${escapeHtml(item.account)}</td>
+        <td data-sort-value="${Number(item.quantity || 0)}">${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+        <td data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td>
+        <td data-sort-value="${Number(item.gain_pct || 0)}">${pctSigned(item.gain_pct)}</td>
+        <td data-sort-value="${escapeHtml(item.source || "-")}">${escapeHtml(item.source || "-")}</td>
         <td>${statusBadge(item.gain_pct)}</td>
       </tr>
     `;
@@ -558,12 +568,20 @@ function renderHoldings(portfolio) {
   wireSortableTables();
 }
 
-async function refreshMarketPrices() {
+function bindRefreshButtons() {
+  document.querySelectorAll(".refresh-prices-action").forEach((button) => {
+    button.addEventListener("click", () => refreshMarketPrices());
+  });
+}
+
+async function refreshMarketPrices(options = {}) {
   const status = el("priceRefreshStatus");
-  const button = el("refreshPricesButton");
+  const buttons = [...document.querySelectorAll(".refresh-prices-action")];
   if (!supabaseClient || !state.session) return;
-  if (status) status.textContent = "Refreshing market prices...";
-  if (button) button.disabled = true;
+  if (status && !options.quiet) status.textContent = "Refreshing market prices...";
+  buttons.forEach((button) => {
+    button.disabled = true;
+  });
   try {
     const invokePromise = fetch(`${config.supabaseUrl}/functions/v1/refresh-prices`, {
       method: "POST",
@@ -572,7 +590,7 @@ async function refreshMarketPrices() {
         "apikey": config.supabaseAnonKey,
         "Content-Type": "application/json"
       },
-      body: "{}"
+      body: JSON.stringify({ extraTickers: options.extraTickers || [] })
     }).then(async (response) => {
       const text = await response.text();
       let payload = {};
@@ -587,7 +605,7 @@ async function refreshMarketPrices() {
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Market refresh is taking too long. Please try again.")), 45000));
     const data = await Promise.race([invokePromise, timeoutPromise]);
     await loadCloudLedger();
-    renderAll();
+    if (!options.quiet) renderAll();
     const refreshed = data?.updated ?? 0;
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
     const nextStatus = el("priceRefreshStatus");
@@ -596,29 +614,30 @@ async function refreshMarketPrices() {
     const nextStatus = el("priceRefreshStatus");
     if (nextStatus) nextStatus.textContent = `Market refresh failed: ${error.message}`;
   } finally {
-    const nextButton = el("refreshPricesButton");
-    if (nextButton) nextButton.disabled = false;
+    document.querySelectorAll(".refresh-prices-action").forEach((button) => {
+      button.disabled = false;
+    });
   }
 }
 
 function renderTransaction(portfolio) {
   const disabled = !isConfigured ? "disabled" : "";
   const note = !isConfigured ? '<p class="notice">Demo mode is view-only. Configure Supabase to enable shared edits.</p>' : "";
-  const saved = state.saveMessage ? `<div class="save-banner">${escapeHtml(state.saveMessage)}</div>` : "";
+  const saved = (area) => state.saveMessage && state.saveArea === area ? `<div class="save-banner">${escapeHtml(state.saveMessage)}</div>` : "";
   const cashConfirm = state.pendingCashConfirm ? renderCashConfirm(portfolio) : "";
   el("transactionView").innerHTML = `
     ${note}
-    ${saved}
     ${cashConfirm}
     <section class="grid two">
       <div class="card">
         <h2>Buy / Sell Equity</h2>
+        ${saved("equity")}
         <form id="equityForm">
           <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
           <label>Owner</label>${ownerSelect(disabled)}
           <label>Account</label><select name="account" required ${disabled}></select>
           <label>Action</label><select name="type" ${disabled}><option value="buy">Buy</option><option value="sell">Sell</option></select>
-          <label>Ticker</label><div class="lookup-row"><input name="ticker" class="ticker-input" required ${disabled}><button type="button" class="lookup-button" ${disabled}>Check</button></div><div class="lookup-status"></div>
+          <label>Ticker</label><div class="lookup-row"><input name="ticker" class="ticker-input" required ${disabled}><button type="button" class="lookup-button" ${disabled}>Find</button></div><div class="lookup-status"></div>
           <label>Holding name</label><input name="holding" required ${disabled}>
           <label>Quantity of shares</label><input name="quantity" type="number" step="any" required ${disabled}>
           <label>Price per share</label><input name="price" type="number" step="any" required ${disabled}>
@@ -630,6 +649,7 @@ function renderTransaction(portfolio) {
       </div>
       <div class="card">
         <h2>Cash Deposit / Withdrawal</h2>
+        ${saved("cash")}
         <form id="cashForm">
           <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
           <label>Owner</label>${ownerSelect(disabled)}
@@ -645,6 +665,7 @@ function renderTransaction(portfolio) {
     </section>
     <section class="card" style="margin-top:18px">
       <h2>Manual Updates</h2>
+      ${saved("manual")}
       <form id="manualForm">
         <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
         <label>Type</label><select name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
@@ -704,6 +725,7 @@ function wireTransactionForms(portfolio) {
   el("cashConfirmDisregard")?.addEventListener("click", () => {
     state.pendingCashConfirm = null;
     state.saveMessage = "Cash confirmation skipped.";
+    state.saveArea = "cash";
     renderAll();
   });
 }
@@ -712,7 +734,7 @@ function wireTickerLookup(form, portfolio) {
   const input = form.elements.ticker;
   const holding = form.elements.holding;
   const status = form.querySelector(".lookup-status");
-  const update = () => {
+  const update = async () => {
     const ticker = input.value.trim().toUpperCase();
     if (!ticker) return;
     const quote = portfolio.prices.get(ticker);
@@ -720,11 +742,21 @@ function wireTickerLookup(form, portfolio) {
     if (!holding.value || holding.value === holdingNameMap[input.dataset.lastTicker]) holding.value = name;
     input.dataset.lastTicker = ticker;
     status.textContent = quote
-      ? `Checked: ${name} at ${quote.currency} ${Number(quote.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}`
-      : `Auto-filled ${name}. Refresh market prices if this is a new ticker.`;
+      ? `${name} · ${quote.currency} ${Number(quote.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}`
+      : name;
     status.className = quote ? "lookup-status ok" : "lookup-status warn";
+    if (!quote && supabaseClient && state.session) {
+      status.textContent = `${name} · looking up price...`;
+      await refreshMarketPrices({ extraTickers: [ticker], quiet: true });
+      const refreshedPortfolio = calculatePortfolio();
+      const refreshedQuote = refreshedPortfolio.prices.get(ticker);
+      status.textContent = refreshedQuote
+        ? `${name} · ${refreshedQuote.currency} ${Number(refreshedQuote.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}`
+        : name;
+      status.className = refreshedQuote ? "lookup-status ok" : "lookup-status warn";
+    }
   };
-  input.addEventListener("blur", update);
+  input.addEventListener("blur", () => update());
   form.querySelector(".lookup-button")?.addEventListener("click", update);
 }
 
@@ -798,6 +830,7 @@ async function submitEquity(event, portfolio) {
   };
   await insertRow("portfolio_transactions", row, "add");
   state.saveMessage = "Equity transaction added. Your accounts have been updated.";
+  state.saveArea = "equity";
   state.pendingCashConfirm = { owner: data.owner, account: data.account };
   form.reset();
   await loadCloudLedger();
@@ -834,6 +867,7 @@ async function submitCashConfirmation(event, portfolio) {
   }
   state.pendingCashConfirm = null;
   state.saveMessage = "Cash balance confirmed.";
+  state.saveArea = "cash";
   await loadCloudLedger();
   renderAll();
 }
@@ -863,6 +897,7 @@ async function submitCash(event, portfolio) {
   };
   await insertRow("portfolio_transactions", row, "add");
   state.saveMessage = "Cash transaction added. Your accounts have been updated.";
+  state.saveArea = "cash";
   form.reset();
   await loadCloudLedger();
   renderAll();
@@ -906,6 +941,7 @@ async function submitManual(event, portfolio) {
     }, "manual_update");
   }
   state.saveMessage = "Manual value saved. Your accounts have been updated.";
+  state.saveArea = "manual";
   form.reset();
   await loadCloudLedger();
   renderAll();
@@ -931,6 +967,7 @@ async function updateRowWithVersion(tableName, row, patch, action) {
 async function softDeleteTransaction(id) {
   const row = state.ledger.transactions.find((item) => item.id === id);
   if (!row || row.is_locked) return;
+  if (!confirm("Are you sure you want to delete this ledger entry?")) return;
   state.lastUndoneTransaction = row;
   await updateRowWithVersion("portfolio_transactions", row, { deleted_at: new Date().toISOString(), deleted_by: state.session.user.id }, "soft_delete");
   await loadCloudLedger();
@@ -950,6 +987,7 @@ async function redoLatestTransaction() {
   await insertRow("portfolio_transactions", { ...row, is_locked: false, created_by: state.session.user.id, updated_by: state.session.user.id }, "redo");
   state.lastUndoneTransaction = null;
   state.saveMessage = "Latest transaction restored.";
+  state.saveArea = "cash";
   await loadCloudLedger();
   renderAll();
 }
@@ -1117,8 +1155,8 @@ function wireSortableTables() {
       table.querySelectorAll("th").forEach((header) => delete header.dataset.direction);
       th.dataset.direction = direction;
       rows.sort((a, b) => {
-        const left = a.children[index]?.innerText || "";
-        const right = b.children[index]?.innerText || "";
+        const left = a.children[index]?.dataset.sortValue || a.children[index]?.innerText || "";
+        const right = b.children[index]?.dataset.sortValue || b.children[index]?.innerText || "";
         const leftValue = type === "number" ? Number(left.replace(/[^0-9.-]/g, "")) : left.toLowerCase();
         const rightValue = type === "number" ? Number(right.replace(/[^0-9.-]/g, "")) : right.toLowerCase();
         if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
@@ -1166,6 +1204,7 @@ function bindAuth() {
   });
   el("signOutButton").addEventListener("click", async () => {
     state.saveMessage = "";
+    state.saveArea = "";
     state.pendingCashConfirm = null;
     if (supabaseClient) await supabaseClient.auth.signOut();
   });

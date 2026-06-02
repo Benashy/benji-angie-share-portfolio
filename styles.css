@@ -357,7 +357,7 @@ table.compact {
 }
 
 .save-banner {
-  margin-top: 18px;
+  margin: 0 0 12px;
   color: var(--green);
   background: #e7f5ed;
   border: 1px solid #b7dfc7;
@@ -400,8 +400,45 @@ th[data-sort]::after {
   align-items: center;
 }
 
-.owner-detail table {
-  min-width: 640px;
+.owner-breakdown {
+  width: min(520px, 74vw);
+  margin-top: 8px;
+  padding: 8px;
+  color: var(--ink);
+  background: #fbf7ef;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 26px rgba(23, 20, 17, .08);
+}
+
+.owner-breakdown-head,
+.owner-breakdown-row {
+  display: grid;
+  grid-template-columns: 70px minmax(120px, 1fr) 72px 86px 78px;
+  gap: 8px;
+  align-items: center;
+}
+
+.owner-breakdown-head {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.owner-breakdown-row {
+  padding: 6px 0;
+  font-size: 12px;
+  border-top: 1px solid rgba(216, 208, 197, .72);
+}
+
+.owner-breakdown-row.total {
+  border-top: 3px double var(--gold);
+  font-weight: 800;
+}
+
+.refresh-prices-action {
+  margin-top: 10px;
 }
 
 th,
