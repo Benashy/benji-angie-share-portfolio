@@ -295,6 +295,7 @@ function normalizeRow(row) {
 }
 
 function showDemoMode() {
+  hideBootScreen();
   document.body.classList.remove("auth-only");
   document.title = "Benji and Angie's Investment Portfolio";
   el("authCard").classList.add("hidden");
@@ -305,6 +306,7 @@ function showDemoMode() {
 }
 
 function showAuth() {
+  hideBootScreen();
   document.body.classList.add("auth-only");
   el("authCard").classList.remove("hidden");
   el("presencePanel").classList.add("hidden");
@@ -379,6 +381,7 @@ function setupPresence() {
 }
 
 function renderAll() {
+  hideBootScreen();
   document.body.classList.remove("auth-only");
   document.title = "Benji and Angie's Investment Portfolio";
   el("authCard").classList.add("hidden");
@@ -872,7 +875,13 @@ function bindAuth() {
   });
 }
 
+function hideBootScreen() {
+  const boot = el("bootScreen");
+  if (boot) boot.classList.add("hidden");
+}
+
 init().catch((error) => {
   console.error(error);
+  hideBootScreen();
   el("statusLine").textContent = `App error: ${error.message}`;
 });
