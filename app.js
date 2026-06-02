@@ -1,6 +1,6 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
-const supabaseClient = isConfigured && window.supabase ? window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey) : null;
+const supabaseClient = await createSupabaseClient();
 
 const state = {
   session: null,
@@ -45,6 +45,15 @@ const sectorMap = {
   WXBT: "Bitcoin ETF",
   Crypto: "Crypto"
 };
+
+async function createSupabaseClient() {
+  if (!isConfigured) return null;
+  if (window.supabase?.createClient) {
+    return window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
+  }
+  const module = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
+  return module.createClient(config.supabaseUrl, config.supabaseAnonKey);
+}
 
 const el = (id) => document.getElementById(id);
 const money = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : `£${Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
