@@ -70,6 +70,12 @@ async function createSupabaseClient() {
 
 const el = (id) => document.getElementById(id);
 const money = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : `£${Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+const moneySigned = (value) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+  const number = Number(value);
+  const sign = number > 0 ? "+" : number < 0 ? "-" : "";
+  return `${sign}£${Math.abs(number).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+};
 const usd = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : `$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 const pct = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${(Number(value) * 100).toFixed(1)}%`;
 const pctSigned = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(1)}%`;
@@ -666,6 +672,7 @@ function renderDashboard(portfolio) {
             <summary><span>FX guide</span><strong>£1 = $${portfolio.fx.toFixed(4)}</strong></summary>
             <table class="compact detail-table"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table>
             <p class="footnote fx-freshness${fxFreshClass}">FX data refreshed ${fxUpdated}.</p>
+            <p class="footnote">A stronger pound improves buying power when investing into US equities; a stronger dollar increases the sterling value of existing US holdings and is beneficial when selling back into pounds.</p>
           </details>
         </div>
       </div>
@@ -723,8 +730,8 @@ function netWorthChange(row, previous) {
 
 function formatHistoryChange(change) {
   if (!change) return "-";
-  const tone = change.amount >= 0 ? "gain-text" : "loss-text";
-  return `<span class="${tone}">${money(change.amount)} / ${pctSigned(change.pct)}</span>`;
+  const tone = change.amount > 0 ? "gain-text" : change.amount < 0 ? "loss-text" : "neutral-text";
+  return `<span class="${tone}">${moneySigned(change.amount)} / ${pctSigned(change.pct)}</span>`;
 }
 
 async function ensureMonthlySnapshot(portfolio) {
@@ -1337,11 +1344,7 @@ async function writeAudit(action, tableName, recordId, oldValue, newValue) {
 
 function renderLedger() {
   const editCard = state.editingTransaction ? renderEditTransactionCard(state.editingTransaction) : "";
-  const transactionRows = activeRows(state.ledger.transactions).sort((a, b) => {
-    const dateDiff = dateValue(b.date) - dateValue(a.date);
-    if (dateDiff) return dateDiff;
-    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-  }).map((tx) => {
+  const renderTransactionRow = (tx) => {
     const isCash = tx.type === "deposit" || tx.type === "withdrawal";
     const actions = tx.is_locked || !isConfigured
       ? '<span class="subtle">Locked</span>'
@@ -1372,14 +1375,40 @@ function renderLedger() {
       </tr>
       ${noteRow}
     `;
-  }).join("");
-  const manualRows = [
-    ...activeRows(state.ledger.manual_values).map((row) => ({ date: row.date, created_at: row.updated_at || row.created_at, type: "manual valuation", owner: row.owner, account: row.account, ticker: row.ticker, quantity: "-", price: "-", amount: row.value_gbp, currency: row.currency_entered || "GBP" })),
-    ...activeRows(state.ledger.pensions).map((row) => ({ date: row.date, created_at: row.updated_at || row.created_at, type: "pension valuation", owner: "Benji", account: row.name, ticker: "PENSION", quantity: "-", price: "-", amount: row.value_gbp, currency: "GBP" }))
-  ].sort((a, b) => dateValue(b.date) - dateValue(a.date)).map((row) => `
+  };
+  const renderValuationRow = (row) => `
     <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.currency)}</td><td><span class="subtle">Audit</span></td></tr>
-  `).join("");
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table style="margin-top:12px"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></div></section>`;
+  `;
+  const ledgerItems = [
+    ...activeRows(state.ledger.transactions).map((row) => ({
+      date: row.date,
+      created_at: row.updated_at || row.created_at,
+      html: renderTransactionRow(row)
+    })),
+    ...activeRows(state.ledger.manual_values).map((row) => ({
+      date: row.date,
+      created_at: row.updated_at || row.created_at,
+      html: renderValuationRow({ date: row.date, created_at: row.updated_at || row.created_at, type: "manual valuation", owner: row.owner, account: row.account, ticker: row.ticker, quantity: "-", price: "-", amount: row.value_gbp, currency: row.currency_entered || "GBP" })
+    })),
+    ...activeRows(state.ledger.pensions).map((row) => ({
+      date: row.date,
+      created_at: row.updated_at || row.created_at,
+      html: renderValuationRow({ date: row.date, created_at: row.updated_at || row.created_at, type: "pension valuation", owner: "Benji", account: row.name, ticker: "PENSION", quantity: "-", price: "-", amount: row.value_gbp, currency: "GBP" })
+    }))
+  ].sort((a, b) => {
+    const dateDiff = dateValue(b.date) - dateValue(a.date);
+    if (dateDiff) return dateDiff;
+    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+  });
+  const visibleRows = ledgerItems.slice(0, 5).map((item) => item.html).join("");
+  const olderRows = ledgerItems.slice(5).map((item) => item.html).join("");
+  const olderLedger = olderRows ? `
+    <details class="ledger-history-detail">
+      <summary>Older ledger entries (${ledgerItems.length - 5})</summary>
+      <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
+    </details>
+  ` : "";
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);

@@ -563,16 +563,16 @@ table.compact {
 }
 
 .ledger-note-row td {
-  padding-top: 0;
-  background: #fffdf8;
+  padding: 0 10px 10px;
+  background: #fbf7ef;
   border-top: 0;
 }
 
 .ledger-note-detail {
-  margin: -2px 0 8px;
+  margin: 0;
   padding: 8px 10px;
-  background: #fbf7ef;
-  border: 1px solid var(--line);
+  background: #fffdf8;
+  border: 1px solid rgba(216, 208, 197, .82);
   border-radius: 8px;
 }
 
@@ -591,6 +591,27 @@ table.compact {
   margin: 8px 0 0;
   color: var(--ink);
   font-size: 13px;
+}
+
+.ledger-history-detail {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.ledger-history-detail > summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ledger-history-detail > summary::marker {
+  color: var(--gold);
+}
+
+.ledger-history-detail .table-shell {
+  margin-top: 10px;
 }
 
 th[data-sort] {
