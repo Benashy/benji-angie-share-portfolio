@@ -633,6 +633,10 @@ table.compact {
   margin-top: 10px;
 }
 
+.ledger-backup-row {
+  margin-bottom: 12px;
+}
+
 th[data-sort] {
   cursor: pointer;
   white-space: nowrap;

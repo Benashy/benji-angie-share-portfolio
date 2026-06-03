@@ -1447,7 +1447,7 @@ function renderLedger() {
       <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
     </details>
   ` : "";
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
@@ -1598,10 +1598,11 @@ function showView(view) {
 }
 
 function wireSortableTables() {
-  document.querySelectorAll("table.sortable th[data-sort]").forEach((th, index) => {
+  document.querySelectorAll("table.sortable th[data-sort]").forEach((th) => {
     th.addEventListener("click", () => {
       const table = th.closest("table");
       const tbody = table.querySelector("tbody");
+      const columnIndex = th.cellIndex;
       const rows = [...tbody.querySelectorAll("tr.holding-main-row, tr:not(.details-row):not(.holding-main-row)")].filter((row) => !row.classList.contains("details-row"));
       const detailRows = new Map([...tbody.querySelectorAll("tr.details-row")].map((row) => [row.dataset.parent, row]));
       const type = th.dataset.sort;
@@ -1609,8 +1610,8 @@ function wireSortableTables() {
       table.querySelectorAll("th").forEach((header) => delete header.dataset.direction);
       th.dataset.direction = direction;
       rows.sort((a, b) => {
-        const left = a.children[index]?.dataset.sortValue || a.children[index]?.innerText || "";
-        const right = b.children[index]?.dataset.sortValue || b.children[index]?.innerText || "";
+        const left = a.children[columnIndex]?.dataset.sortValue || a.children[columnIndex]?.innerText || "";
+        const right = b.children[columnIndex]?.dataset.sortValue || b.children[columnIndex]?.innerText || "";
         const leftValue = type === "number" ? Number(left.replace(/[^0-9.-]/g, "")) : left.toLowerCase();
         const rightValue = type === "number" ? Number(right.replace(/[^0-9.-]/g, "")) : right.toLowerCase();
         if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
