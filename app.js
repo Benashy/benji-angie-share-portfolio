@@ -557,16 +557,26 @@ function setupPresence() {
   channel.on("presence", { event: "sync" }, () => {
     const presence = channel.presenceState();
     const names = Object.values(presence).flat().map((item) => item.display_name);
-    el("benjiPresence").className = names.includes("Benji") ? "presence-online" : "presence-offline";
-    el("angiePresence").className = names.includes("Angie") ? "presence-online" : "presence-offline";
-    el("benjiPresence").textContent = `Benji ${names.includes("Benji") ? "online" : "offline"}`;
-    el("angiePresence").textContent = `Angie ${names.includes("Angie") ? "online" : "offline"}`;
+    renderPresence(names);
   });
   channel.subscribe(async (status) => {
     if (status === "SUBSCRIBED") await channel.track({ display_name: currentUserName(), online_at: new Date().toISOString() });
   });
   state.presenceChannel = channel;
   el("presencePanel").classList.remove("hidden");
+}
+
+function renderPresence(onlineNames = []) {
+  const current = currentUserName();
+  const orderedNames = current === "Angie" ? ["Angie", "Benji"] : ["Benji", "Angie"];
+  orderedNames.forEach((name, index) => {
+    const presence = el(`${name.toLowerCase()}Presence`);
+    const online = onlineNames.includes(name);
+    presence.className = `${online ? "presence-online" : "presence-offline"} ${index === 0 ? "presence-primary" : "presence-secondary"}`;
+    presence.textContent = `${name} ${online ? "online" : "offline"}`;
+    presence.style.order = String(30 + index);
+  });
+  el("signOutButton").style.order = "32";
 }
 
 function renderAll() {
@@ -629,7 +639,7 @@ function renderDashboard(portfolio) {
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
   const performanceRows = (items, tone) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td><span class="${tone}">${pctSigned(item.gain_pct)}</span></td></tr>`).join("") || '<tr><td colspan="4">None</td></tr>';
-  const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td></tr>`).join("");
+  const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td><td>${formatHistoryChange(row.change_1m)}</td><td>${formatHistoryChange(row.change_6m)}</td><td>${formatHistoryChange(row.change_12m)}</td></tr>`).join("");
   const topHoldingText = top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-";
   const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
   const fxFreshClass = fxUpdated === "more than an hour ago" ? " market-error" : fxUpdated === "not refreshed" ? "" : " market-ok";
@@ -665,7 +675,7 @@ function renderDashboard(portfolio) {
       <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase.</p></div>
       <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></div>
     </section>
-    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
+    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
   `;
   bindRefreshButtons();
 }
@@ -673,17 +683,48 @@ function renderDashboard(portfolio) {
 function buildNetWorthHistory(portfolio) {
   const snapshots = (state.ledger.net_worth_snapshots || []).map((row) => ({
     date: row.snapshot_date,
+    month_key: row.month_key || String(row.snapshot_date || "").slice(0, 7),
     net_worth_total: Number(row.net_worth_total || 0),
     accessible_total: Number(row.accessible_total || 0),
     pension_total: Number(row.pension_total || 0)
-  }));
-  if (snapshots.length) return snapshots;
-  return [{
+  })).sort((a, b) => String(b.month_key).localeCompare(String(a.month_key)));
+  const rows = snapshots.length ? snapshots : [{
     date: todayIso(),
+    month_key: todayIso().slice(0, 7),
     net_worth_total: portfolio.netWorthTotal,
     accessible_total: portfolio.accessibleTotal,
     pension_total: portfolio.pensionTotal
   }];
+  return rows.map((row) => ({
+    ...row,
+    change_1m: netWorthChange(row, findPreviousSnapshot(rows, row, 1)),
+    change_6m: netWorthChange(row, findPreviousSnapshot(rows, row, 6)),
+    change_12m: netWorthChange(row, findPreviousSnapshot(rows, row, 12))
+  }));
+}
+
+function monthIndex(monthKey) {
+  const [year, month] = String(monthKey || "").split("-").map(Number);
+  return Number.isFinite(year) && Number.isFinite(month) ? year * 12 + month : 0;
+}
+
+function findPreviousSnapshot(rows, row, monthsBack) {
+  const target = monthIndex(row.month_key) - monthsBack;
+  return rows
+    .filter((candidate) => monthIndex(candidate.month_key) <= target)
+    .sort((a, b) => monthIndex(b.month_key) - monthIndex(a.month_key))[0];
+}
+
+function netWorthChange(row, previous) {
+  if (!previous || !Number(previous.net_worth_total)) return null;
+  const amount = Number(row.net_worth_total || 0) - Number(previous.net_worth_total || 0);
+  return { amount, pct: amount / Number(previous.net_worth_total || 0) };
+}
+
+function formatHistoryChange(change) {
+  if (!change) return "-";
+  const tone = change.amount >= 0 ? "gain-text" : "loss-text";
+  return `<span class="${tone}">${money(change.amount)} / ${pctSigned(change.pct)}</span>`;
 }
 
 async function ensureMonthlySnapshot(portfolio) {
@@ -1305,6 +1346,16 @@ function renderLedger() {
     const actions = tx.is_locked || !isConfigured
       ? '<span class="subtle">Locked</span>'
       : `<div class="inline-row"><button class="secondary small" data-edit="${tx.id}">Edit</button><button class="danger small" data-delete="${tx.id}">Delete</button></div>`;
+    const noteRow = tx.notes ? `
+      <tr class="ledger-note-row">
+        <td colspan="11">
+          <details class="ledger-note-detail">
+            <summary>Notes</summary>
+            <p>${escapeHtml(tx.notes)}</p>
+          </details>
+        </td>
+      </tr>
+    ` : "";
     return `
       <tr>
         <td>${displayDate(tx.date)}</td>
@@ -1319,6 +1370,7 @@ function renderLedger() {
         <td>${escapeHtml(tx.currency)}</td>
         <td>${actions}</td>
       </tr>
+      ${noteRow}
     `;
   }).join("");
   const manualRows = [

@@ -214,23 +214,40 @@ button.nav.active {
 .hero .presence-panel #marketDataSummary {
   flex: 0 1 auto;
   color: #f2eadc;
+  order: 10;
 }
 
-.hero .presence-panel .refresh-prices-action {
+.hero .presence-panel .refresh-prices-action,
+.hero .presence-panel #signOutButton {
   margin-right: 0;
   flex: 0 0 auto;
   color: #f2eadc;
-  background: transparent;
+  background: rgba(12, 12, 12, .35);
   border: 1px solid rgba(217, 197, 159, .44);
   border-radius: 999px;
+}
+
+.hero .presence-panel .refresh-prices-action {
+  order: 0;
+}
+
+.hero .presence-panel #signOutButton {
+  color: #ffffff;
 }
 
 .hero .presence-panel span {
   color: #d8d0c5;
 }
 
-.hero .presence-panel #benjiPresence {
+.hero .presence-panel .presence-primary {
   margin-left: auto;
+}
+
+.hero .presence-panel .presence-primary::after {
+  content: "|";
+  color: rgba(242, 234, 220, .48);
+  margin-left: 10px;
+  font-weight: 600;
 }
 
 .presence-online {
@@ -543,6 +560,37 @@ table.compact {
 .valuation-row td {
   color: var(--muted);
   background: #fbf7ef;
+}
+
+.ledger-note-row td {
+  padding-top: 0;
+  background: #fffdf8;
+  border-top: 0;
+}
+
+.ledger-note-detail {
+  margin: -2px 0 8px;
+  padding: 8px 10px;
+  background: #fbf7ef;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ledger-note-detail summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ledger-note-detail summary::marker {
+  color: var(--gold);
+}
+
+.ledger-note-detail p {
+  margin: 8px 0 0;
+  color: var(--ink);
+  font-size: 13px;
 }
 
 th[data-sort] {
