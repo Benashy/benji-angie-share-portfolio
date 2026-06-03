@@ -671,7 +671,7 @@ function renderDashboard(portfolio) {
   }).join("");
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
-  const performanceRows = (items, tone) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td><td><span class="${tone}">${pctSigned(item.gain_pct)}</span></td><td><span class="${tone}">${moneySigned(item.gain_gbp)}</span></td></tr>`).join("") || '<tr><td colspan="5">None</td></tr>';
+  const performanceRows = (items, tone) => items.map((item) => `<tr><td data-sort-value="${escapeHtml(item.ticker)}">${escapeHtml(item.ticker)}</td><td data-sort-value="${escapeHtml(displayHoldingName(item.ticker, item.holding))}">${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td><td data-sort-value="${Number(item.gain_pct || 0)}"><span class="${tone}">${pctSigned(item.gain_pct)}</span></td><td data-sort-value="${Number(item.gain_gbp || 0)}"><span class="${tone}">${moneySigned(item.gain_gbp)}</span></td></tr>`).join("") || '<tr><td colspan="5">None</td></tr>';
   const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td><td>${formatHistoryChange(row.change_1m)}</td><td>${formatHistoryChange(row.change_6m)}</td><td>${formatHistoryChange(row.change_12m)}</td></tr>`).join("");
   const topHoldingText = top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-";
   const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
@@ -705,13 +705,12 @@ function renderDashboard(portfolio) {
       </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
-    <section class="grid two">
-      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>% since purchase</th><th>GBP since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase.</p></div>
-      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>% since purchase</th><th>GBP since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></div>
-    </section>
+    <section class="card gain-card"><h2>Top Gainers</h2><div class="table-shell"><table class="sortable performance-table"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table></div><p class="footnote">Performance is measured since purchase.</p></section>
+    <section class="card loss-card"><h2>Top Losers</h2><div class="table-shell"><table class="sortable performance-table"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table></div><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></section>
     <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on the first signed-in use of that month.</p></details></section>
   `;
   bindRefreshButtons();
+  wireSortableTables();
 }
 
 function buildNetWorthHistory(portfolio) {

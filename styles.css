@@ -639,6 +639,19 @@ th[data-sort]::after {
   overflow-x: auto;
 }
 
+.performance-table {
+  min-width: 760px;
+}
+
+.performance-table th:nth-child(3),
+.performance-table th:nth-child(4),
+.performance-table th:nth-child(5),
+.performance-table td:nth-child(3),
+.performance-table td:nth-child(4),
+.performance-table td:nth-child(5) {
+  text-align: right;
+}
+
 .holdings-table {
   min-width: 1040px;
   table-layout: fixed;
