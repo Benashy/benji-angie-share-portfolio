@@ -283,6 +283,16 @@ button.nav.active {
   max-width: 520px;
 }
 
+#dashboardView {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+#dashboardView > section {
+  margin-top: 0;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -292,10 +302,6 @@ button.nav.active {
 
 .grid.two {
   grid-template-columns: 1fr 1fr;
-}
-
-#dashboardView > section {
-  margin-top: 18px;
 }
 
 h2 {
@@ -665,6 +671,7 @@ th[data-sort]::after {
   color: var(--ink);
   font-size: 20px;
   font-weight: 760;
+  line-height: 1.2;
 }
 
 .history-detail > table {
