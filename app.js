@@ -14,7 +14,12 @@ const state = {
   editingTransaction: null,
   saveMessage: "",
   saveArea: "",
+  saveMessages: {},
+  saveTimers: {},
+  busyForms: {},
   marketRefreshMessage: "",
+  marketRefreshTone: "",
+  marketMessageTimer: null,
   marketRefreshing: false,
   autoRefreshTimer: null,
   initialPriceRefreshDone: false,
@@ -200,17 +205,86 @@ function marketRefreshIsStale(portfolio, minutes = autoRefreshMinutes) {
   return rows.some((row) => Date.now() - new Date(row.fetched_at).getTime() > minutes * 60 * 1000);
 }
 
+function refreshAgeText(value) {
+  if (!value) return "not refreshed";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "not refreshed";
+  const minutes = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
+  if (minutes >= 60) return "more than an hour ago";
+  return `${shortUkTime(date)} UK`;
+}
+
 function marketFreshnessText(portfolio) {
   const equity = newestEquityPrice(portfolio.prices);
   const fx = portfolio.prices.get("GBPUSD=X");
-  const equityText = equity ? `Equities ${displayDateTime(equity.fetched_at)} UK` : "Equities not refreshed";
-  const fxText = fx?.fetched_at ? `FX ${displayDateTime(fx.fetched_at)} UK` : "FX not refreshed";
-  return `${equityText} · ${fxText} · Auto ${autoRefreshMinutes}m`;
+  const equityText = `Equities ${refreshAgeText(equity?.fetched_at)}`;
+  const fxText = `FX ${refreshAgeText(fx?.fetched_at)}`;
+  return `${equityText} · ${fxText}`;
 }
 
 function updateMarketDataSummary(portfolio) {
   const target = el("marketDataSummary");
-  if (target) target.textContent = state.marketRefreshMessage || marketFreshnessText(portfolio);
+  if (target) {
+    target.textContent = state.marketRefreshMessage || marketFreshnessText(portfolio);
+    target.classList.toggle("market-ok", state.marketRefreshTone === "success");
+    target.classList.toggle("market-error", state.marketRefreshTone === "error");
+  }
+}
+
+function setMarketRefreshMessage(text, tone = "", clearAfterMs = null) {
+  if (state.marketMessageTimer) window.clearTimeout(state.marketMessageTimer);
+  state.marketRefreshMessage = text;
+  state.marketRefreshTone = tone;
+  updateMarketDataSummary(calculatePortfolio());
+  if (clearAfterMs) {
+    state.marketMessageTimer = window.setTimeout(() => {
+      state.marketRefreshMessage = "";
+      state.marketRefreshTone = "";
+      updateMarketDataSummary(calculatePortfolio());
+    }, clearAfterMs);
+  }
+}
+
+function shortUkTime(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toLocaleTimeString("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
+function setSaveMessage(area, text, tone = "success") {
+  if (state.saveTimers[area]) window.clearTimeout(state.saveTimers[area]);
+  state.saveMessages[area] = { text, tone };
+  state.saveMessage = text;
+  state.saveArea = area;
+  state.saveTimers[area] = window.setTimeout(() => {
+    delete state.saveMessages[area];
+    const banner = document.querySelector(`[data-save-area="${area}"]`);
+    if (banner) banner.remove();
+  }, 15000);
+}
+
+function saveBanner(area) {
+  const message = state.saveMessages[area];
+  if (!message) return "";
+  return `<div class="save-banner ${message.tone === "error" ? "save-error" : message.tone === "warning" ? "save-warning" : ""}" data-save-area="${area}">${escapeHtml(message.text)}</div>`;
+}
+
+function setFormWorking(form, working, label = "Saving...") {
+  const button = form?.querySelector("button:not([type]), button[type='submit']");
+  if (!button) return;
+  if (working) {
+    button.dataset.originalText = button.textContent;
+    button.textContent = label;
+    button.disabled = true;
+  } else {
+    button.textContent = button.dataset.originalText || button.textContent;
+    button.disabled = false;
+    delete button.dataset.originalText;
+  }
 }
 
 function calculatePortfolio() {
@@ -526,7 +600,7 @@ function renderDashboard(portfolio) {
   const pensions = latestPensions();
   const pensionRows = pensions.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${displayDate(p.date)}</td><td>${money(p.value_gbp)}</td></tr>`).join("");
   const pensionDetails = pensions.length
-    ? `<details><summary>View pension lines</summary><table class="compact"><thead><tr><th>Pension</th><th>Date</th><th>Value</th></tr></thead><tbody>${pensionRows}<tr class="total-row"><td colspan="2">British Airways pension total</td><td>${money(portfolio.pensionTotal)}</td></tr></tbody></table></details>`
+    ? `<details><summary>View pension lines</summary><table class="compact"><thead><tr><th>Pension</th><th>Date</th><th>Value</th></tr></thead><tbody>${pensionRows}<tr class="total-row"><td colspan="2">Pension total</td><td>${money(portfolio.pensionTotal)}</td></tr></tbody></table></details>`
     : '<p class="subtle">No pension values loaded.</p>';
   const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
   const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
@@ -552,20 +626,34 @@ function renderDashboard(portfolio) {
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
   const performanceRows = (items, tone) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td><span class="${tone}">${pctSigned(item.gain_pct)}</span></td></tr>`).join("") || '<tr><td colspan="4">None</td></tr>';
   const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td></tr>`).join("");
+  const topHoldingText = top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-";
+  const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
+  const fxFreshClass = fxUpdated === "not refreshed" || fxUpdated === "more than an hour ago" ? "" : " market-ok";
 
   el("dashboardView").innerHTML = `
     <section class="grid two hero-metrics">
       <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) / Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
-      <div class="card"><div class="subtle">British Airways pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
+      <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
     </section>
     <section class="grid two">
-      <div class="card"><h2>Portfolio Highlights</h2><table class="highlight-table"><tbody>
-        <tr><td>Top holding</td><td>${top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-"}</td></tr>
-        <tr><td colspan="2"><details><summary><span>Top 5 concentration</span><span>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</span></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Weight</th></tr></thead><tbody>${topFiveRows}</tbody></table></details></td></tr>
-        <tr><td>Equal-weight guide</td><td>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</td></tr>
-        <tr><td colspan="2"><details><summary><span>Cash</span><span>${money(portfolio.totalCash)} (${pct(cashPct)})</span></summary><table class="compact detail-table"><thead><tr><th>Owner</th><th>Account</th><th>Value</th></tr></thead><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details></td></tr>
-        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact detail-table"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table><p class="footnote">FX data refreshed ${displayDateTime(portfolio.prices.get("GBPUSD=X")?.fetched_at)} UK.</p></details></td></tr>
-      </tbody></table>
+      <div class="card"><h2>Portfolio Highlights</h2>
+        <div class="highlight-list">
+          <div class="highlight-row"><span>Top holding</span><strong>${topHoldingText}</strong></div>
+          <details class="highlight-detail">
+            <summary><span>Top 5 concentration</span><strong>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</strong></summary>
+            <table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Weight</th></tr></thead><tbody>${topFiveRows}</tbody></table>
+          </details>
+          <div class="highlight-row"><span>Equal-weight guide</span><strong>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</strong></div>
+          <details class="highlight-detail">
+            <summary><span>Cash</span><strong>${money(portfolio.totalCash)} (${pct(cashPct)})</strong></summary>
+            <table class="compact detail-table"><thead><tr><th>Owner</th><th>Account</th><th>Value</th></tr></thead><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table>
+          </details>
+          <details class="highlight-detail">
+            <summary><span>FX guide</span><strong>£1 = $${portfolio.fx.toFixed(4)}</strong></summary>
+            <table class="compact detail-table"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table>
+            <p class="footnote fx-freshness${fxFreshClass}">FX data refreshed ${fxUpdated}.</p>
+          </details>
+        </div>
       </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
@@ -690,8 +778,7 @@ async function refreshMarketPrices(options = {}) {
   if (state.marketRefreshing) return;
   state.marketRefreshing = true;
   if (!options.quiet) {
-    state.marketRefreshMessage = "Refreshing market prices...";
-    updateMarketDataSummary(calculatePortfolio());
+    setMarketRefreshMessage("Refreshing market prices...");
   }
   buttons.forEach((button) => {
     button.disabled = true;
@@ -720,16 +807,14 @@ async function refreshMarketPrices(options = {}) {
     const data = await Promise.race([invokePromise, timeoutPromise]);
     await loadCloudLedger();
     await ensureMonthlySnapshot(calculatePortfolio());
-    const refreshed = data?.updated ?? 0;
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
     if (!options.quiet) {
-      state.marketRefreshMessage = `Market prices refreshed. ${refreshed} updated.${skipped} · ${marketFreshnessText(calculatePortfolio())}`;
+      setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}${skipped}`, "success", 15000);
       renderAll();
     }
   } catch (error) {
     if (!options.quiet) {
-      state.marketRefreshMessage = `Market refresh failed: ${error.message} · ${marketFreshnessText(calculatePortfolio())}`;
-      updateMarketDataSummary(calculatePortfolio());
+      setMarketRefreshMessage(`Market refresh failed: ${error.message} · ${marketFreshnessText(calculatePortfolio())}`, "error");
     }
   } finally {
     state.marketRefreshing = false;
@@ -756,7 +841,6 @@ function startAutoRefresh(portfolio) {
 function renderTransaction(portfolio) {
   const disabled = !isConfigured ? "disabled" : "";
   const note = !isConfigured ? '<p class="notice">Demo mode is view-only. Configure Supabase to enable shared edits.</p>' : "";
-  const saved = (area) => state.saveMessage && state.saveArea === area ? `<div class="save-banner">${escapeHtml(state.saveMessage)}</div>` : "";
   const cashConfirm = state.pendingCashConfirm ? renderCashConfirm(portfolio) : "";
   el("transactionView").innerHTML = `
     ${note}
@@ -764,7 +848,7 @@ function renderTransaction(portfolio) {
     <section class="grid two">
       <div class="card">
         <h2>Buy / Sell Equity</h2>
-        ${saved("equity")}
+        ${saveBanner("equity")}
         <form id="equityForm">
           <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
           <label>Owner</label>${ownerSelect(disabled)}
@@ -782,7 +866,7 @@ function renderTransaction(portfolio) {
       </div>
       <div class="card">
         <h2>Cash Deposit / Withdrawal</h2>
-        ${saved("cash")}
+        ${saveBanner("cash")}
         <form id="cashForm">
           <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
           <label>Owner</label>${ownerSelect(disabled)}
@@ -798,7 +882,7 @@ function renderTransaction(portfolio) {
     </section>
     <section class="card" style="margin-top:18px">
       <h2>Manual Updates</h2>
-      ${saved("manual")}
+      ${saveBanner("manual")}
       <form id="manualForm">
         <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
         <label>Type</label><select name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
@@ -857,8 +941,7 @@ function wireTransactionForms(portfolio) {
   if (cashConfirmForm) cashConfirmForm.addEventListener("submit", (event) => submitCashConfirmation(event, portfolio));
   el("cashConfirmDisregard")?.addEventListener("click", () => {
     state.pendingCashConfirm = null;
-    state.saveMessage = "Cash confirmation skipped.";
-    state.saveArea = "cash";
+    setSaveMessage("cash", `Cash confirmation skipped at ${shortUkTime()}.`, "warning");
     renderAll();
   });
 }
@@ -939,35 +1022,45 @@ function setupManualForm(form, portfolio) {
 
 async function submitEquity(event, portfolio) {
   event.preventDefault();
+  if (state.busyForms.equity) return;
+  state.busyForms.equity = true;
   const form = event.currentTarget;
-  const data = Object.fromEntries(new FormData(form).entries());
-  const local = Number(data.quantity) * Number(data.price);
-  const amountGbp = data.currency === "USD" ? local / portfolio.fx : local;
-  const row = {
-    date: data.date,
-    type: data.type,
-    owner: data.owner,
-    account: data.account,
-    ticker: data.ticker.toUpperCase().trim(),
-    holding: data.holding.trim(),
-    quantity: Number(data.quantity),
-    price: Number(data.price),
-    currency: data.currency,
-    amount_gbp: amountGbp,
-    cost_basis_gbp: data.type === "buy" ? amountGbp : null,
-    notes: data.notes || "",
-    fees_gbp: 0,
-    is_locked: false,
-    created_by: state.session.user.id,
-    updated_by: state.session.user.id
-  };
-  await insertRow("portfolio_transactions", row, "add");
-  state.saveMessage = "Equity transaction added. Your accounts have been updated.";
-  state.saveArea = "equity";
-  state.pendingCashConfirm = { owner: data.owner, account: data.account };
-  form.reset();
-  await loadCloudLedger();
-  renderAll();
+  setFormWorking(form, true);
+  try {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const local = Number(data.quantity) * Number(data.price);
+    const amountGbp = data.currency === "USD" ? local / portfolio.fx : local;
+    const row = {
+      date: data.date,
+      type: data.type,
+      owner: data.owner,
+      account: data.account,
+      ticker: data.ticker.toUpperCase().trim(),
+      holding: data.holding.trim(),
+      quantity: Number(data.quantity),
+      price: Number(data.price),
+      currency: data.currency,
+      amount_gbp: amountGbp,
+      cost_basis_gbp: data.type === "buy" ? amountGbp : null,
+      notes: data.notes || "",
+      fees_gbp: 0,
+      is_locked: false,
+      created_by: state.session.user.id,
+      updated_by: state.session.user.id
+    };
+    await insertRow("portfolio_transactions", row, "add");
+    setSaveMessage("equity", `${data.type === "buy" ? "Buy" : "Sell"} saved: ${row.ticker} ${money(amountGbp)} at ${shortUkTime()}.`);
+    state.pendingCashConfirm = { owner: data.owner, account: data.account };
+    form.reset();
+    await loadCloudLedger();
+    renderAll();
+  } catch (error) {
+    setSaveMessage("equity", `Equity save failed: ${error.message}`, "error");
+    renderTransaction(portfolio);
+  } finally {
+    state.busyForms.equity = false;
+    setFormWorking(form, false);
+  }
 }
 
 async function submitCashConfirmation(event, portfolio) {
@@ -999,85 +1092,104 @@ async function submitCashConfirmation(event, portfolio) {
     }, "cash_reconcile");
   }
   state.pendingCashConfirm = null;
-  state.saveMessage = "Cash balance confirmed.";
-  state.saveArea = "cash";
+  setSaveMessage("cash", `Cash balance confirmed at ${shortUkTime()}.`);
   await loadCloudLedger();
   renderAll();
 }
 
 async function submitCash(event, portfolio) {
   event.preventDefault();
+  if (state.busyForms.cash) return;
+  state.busyForms.cash = true;
   const form = event.currentTarget;
-  const data = Object.fromEntries(new FormData(form).entries());
-  const amountGbp = data.currency === "USD" ? Number(data.amount) / portfolio.fx : Number(data.amount);
-  const row = {
-    date: data.date,
-    type: data.type,
-    owner: data.owner,
-    account: data.account,
-    ticker: "CASH",
-    holding: "Cash",
-    quantity: 0,
-    price: 0,
-    currency: data.currency,
-    amount_gbp: amountGbp,
-    cost_basis_gbp: null,
-    fees_gbp: 0,
-    notes: data.notes || "",
-    is_locked: false,
-    created_by: state.session.user.id,
-    updated_by: state.session.user.id
-  };
-  await insertRow("portfolio_transactions", row, "add");
-  state.saveMessage = "Cash transaction added. Your accounts have been updated.";
-  state.saveArea = "cash";
-  form.reset();
-  await loadCloudLedger();
-  renderAll();
+  setFormWorking(form, true);
+  try {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const amountGbp = data.currency === "USD" ? Number(data.amount) / portfolio.fx : Number(data.amount);
+    const row = {
+      date: data.date,
+      type: data.type,
+      owner: data.owner,
+      account: data.account,
+      ticker: "CASH",
+      holding: "Cash",
+      quantity: 0,
+      price: 0,
+      currency: data.currency,
+      amount_gbp: amountGbp,
+      cost_basis_gbp: null,
+      fees_gbp: 0,
+      notes: data.notes || "",
+      is_locked: false,
+      created_by: state.session.user.id,
+      updated_by: state.session.user.id
+    };
+    await insertRow("portfolio_transactions", row, "add");
+    setSaveMessage("cash", `${data.type === "deposit" ? "Cash deposit" : "Cash withdrawal"} saved: ${money(amountGbp)} to ${data.account} at ${shortUkTime()}.`);
+    form.reset();
+    await loadCloudLedger();
+    renderAll();
+  } catch (error) {
+    setSaveMessage("cash", `Cash save failed: ${error.message}`, "error");
+    renderTransaction(portfolio);
+  } finally {
+    state.busyForms.cash = false;
+    setFormWorking(form, false);
+  }
 }
 
 async function submitManual(event, portfolio) {
   event.preventDefault();
+  if (state.busyForms.manual) return;
+  state.busyForms.manual = true;
   const form = event.currentTarget;
-  const data = Object.fromEntries(new FormData(form).entries());
-  const entered = Number(data.value);
-  const valueGbp = data.currency === "USD" ? entered / portfolio.fx : entered;
-  const currentGbp = data.kind === "crypto"
-    ? Number(latestManualValueForAccount(data.account)?.value_gbp || 0)
-    : Number(latestPensions().find((row) => row.name === data.account)?.value_gbp || 0);
-  if (currentGbp && Math.abs(valueGbp - currentGbp) / currentGbp > 0.10) {
-    const ok = confirm(`Just be aware this manual value changes by more than 10%. Current value is ${money(currentGbp)}. Save anyway?`);
-    if (!ok) return;
+  setFormWorking(form, true);
+  try {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const entered = Number(data.value);
+    const valueGbp = data.currency === "USD" ? entered / portfolio.fx : entered;
+    const currentGbp = data.kind === "crypto"
+      ? Number(latestManualValueForAccount(data.account)?.value_gbp || 0)
+      : Number(latestPensions().find((row) => row.name === data.account)?.value_gbp || 0);
+    if (currentGbp && Math.abs(valueGbp - currentGbp) / currentGbp > 0.10) {
+      const ok = confirm(`Just be aware this manual value changes by more than 10%. Current value is ${money(currentGbp)}. Save anyway?`);
+      if (!ok) return;
+    }
+    if (data.kind === "crypto") {
+      await insertRow("manual_values", {
+        date: data.date,
+        ticker: "Crypto",
+        holding: "Crypto",
+        owner: "Benji",
+        account: "Benji - Revolut - Crypto",
+        value_gbp: valueGbp,
+        currency_entered: data.currency,
+        value_entered: entered,
+        notes: "Manual value entered in web app",
+        created_by: state.session.user.id,
+        updated_by: state.session.user.id
+      }, "manual_update");
+    } else {
+      await insertRow("pension_values", {
+        date: data.date,
+        name: data.account,
+        value_gbp: valueGbp,
+        cost_gbp: latestPensions().find((row) => row.name === data.account)?.cost_gbp || null,
+        created_by: state.session.user.id,
+        updated_by: state.session.user.id
+      }, "manual_update");
+    }
+    setSaveMessage("manual", `Manual value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()}.`);
+    form.reset();
+    await loadCloudLedger();
+    renderAll();
+  } catch (error) {
+    setSaveMessage("manual", `Manual value save failed: ${error.message}`, "error");
+    renderTransaction(portfolio);
+  } finally {
+    state.busyForms.manual = false;
+    setFormWorking(form, false);
   }
-  if (data.kind === "crypto") {
-    await insertRow("manual_values", {
-      date: data.date,
-      ticker: "Crypto",
-      holding: "Crypto",
-      owner: "Benji",
-      account: "Benji - Revolut - Crypto",
-      value_gbp: valueGbp,
-      currency_entered: data.currency,
-      value_entered: entered,
-      notes: "Manual value entered in web app",
-      created_by: state.session.user.id,
-      updated_by: state.session.user.id
-    }, "manual_update");
-  } else {
-    await insertRow("pension_values", {
-      date: data.date,
-      name: data.account,
-      value_gbp: valueGbp,
-      cost_gbp: latestPensions().find((row) => row.name === data.account)?.cost_gbp || null,
-      created_by: state.session.user.id,
-      updated_by: state.session.user.id
-    }, "manual_update");
-  }
-  state.saveMessage = "Manual value saved. Your accounts have been updated.";
-  state.saveArea = "manual";
-  form.reset();
-  await loadCloudLedger();
-  renderAll();
 }
 
 async function insertRow(tableName, row, action) {
@@ -1114,13 +1226,23 @@ async function softDeleteRow(tableName, row, action) {
   return data;
 }
 
-async function softDeleteTransaction(id) {
+async function softDeleteTransaction(id, trigger) {
   const row = state.ledger.transactions.find((item) => item.id === id);
   if (!row || row.is_locked) return;
   if (!confirm("Are you sure you want to delete this ledger entry?")) return;
+  if (trigger) {
+    trigger.disabled = true;
+    trigger.textContent = "Deleting...";
+  }
   state.lastUndoneTransaction = row;
   const deleted = await softDeleteRow("portfolio_transactions", row, "soft_delete");
-  if (!deleted) return;
+  if (!deleted) {
+    if (trigger) {
+      trigger.disabled = false;
+      trigger.textContent = "Delete";
+    }
+    return;
+  }
   await loadCloudLedger();
   renderAll();
 }
@@ -1199,15 +1321,13 @@ function renderLedger() {
   ].sort((a, b) => dateValue(b.date) - dateValue(a.date)).map((row) => `
     <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.currency)}</td><td><span class="subtle">Audit</span></td></tr>
   `).join("");
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2><p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><button id="undoLatestButton" class="secondary small">Undo latest transaction</button><button id="redoLatestButton" class="secondary small">Redo latest transaction</button></div><div class="table-shell"><table style="margin-top:12px"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></div></section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2><p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table style="margin-top:12px"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></div></section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
-  el("undoLatestButton")?.addEventListener("click", undoLatestTransaction);
-  el("redoLatestButton")?.addEventListener("click", redoLatestTransaction);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
     renderLedger();
   }));
-  el("ledgerView").querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => softDeleteTransaction(button.dataset.delete)));
+  el("ledgerView").querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => softDeleteTransaction(button.dataset.delete, button)));
   const editForm = el("editTransactionForm");
   if (editForm) editForm.addEventListener("submit", submitTransactionEdit);
   const cancel = el("cancelEditButton");
@@ -1246,19 +1366,30 @@ function renderEditTransactionCard(tx) {
 async function submitTransactionEdit(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  if (state.busyForms.ledgerEdit) return;
+  state.busyForms.ledgerEdit = true;
+  setFormWorking(form, true);
   const data = Object.fromEntries(new FormData(form).entries());
   const row = state.ledger.transactions.find((item) => item.id === data.id);
-  if (!row) return;
+  if (!row) {
+    state.busyForms.ledgerEdit = false;
+    setFormWorking(form, false);
+    return;
+  }
   const nextType = data.type;
   const nextAmount = Number(data.amount_gbp || 0);
   const nextQuantity = Number(data.quantity || 0);
   const nextPrice = Number(data.price || 0);
   if ((nextType === "deposit" || nextType === "withdrawal") && nextAmount <= 0) {
     alert("Cash transactions need an amount greater than zero.");
+    state.busyForms.ledgerEdit = false;
+    setFormWorking(form, false);
     return;
   }
   if ((nextType === "buy" || nextType === "sell") && (nextQuantity <= 0 || nextPrice <= 0 || nextAmount <= 0)) {
     alert("Equity transactions need quantity, price and amount greater than zero.");
+    state.busyForms.ledgerEdit = false;
+    setFormWorking(form, false);
     return;
   }
   const patch = {
@@ -1279,7 +1410,10 @@ async function submitTransactionEdit(event) {
     state.editingTransaction = null;
     await loadCloudLedger();
     renderAll();
+  } else {
+    setFormWorking(form, false);
   }
+  state.busyForms.ledgerEdit = false;
 }
 
 function renderAudit() {
@@ -1323,7 +1457,9 @@ function bindNavigation() {
     });
   });
   el("refreshCloudButton").addEventListener("click", async () => {
+    if (state.marketMessageTimer) window.clearTimeout(state.marketMessageTimer);
     state.marketRefreshMessage = "";
+    state.marketRefreshTone = "";
     await loadCloudLedger();
     renderAll();
   });
@@ -1400,8 +1536,17 @@ function bindAuth() {
   el("signOutButton").addEventListener("click", async () => {
     state.saveMessage = "";
     state.saveArea = "";
+    state.saveMessages = {};
+    Object.values(state.saveTimers).forEach((timer) => window.clearTimeout(timer));
+    state.saveTimers = {};
+    state.busyForms = {};
     state.pendingCashConfirm = null;
     state.marketRefreshMessage = "";
+    state.marketRefreshTone = "";
+    if (state.marketMessageTimer) {
+      window.clearTimeout(state.marketMessageTimer);
+      state.marketMessageTimer = null;
+    }
     state.initialPriceRefreshDone = false;
     if (state.autoRefreshTimer) {
       window.clearInterval(state.autoRefreshTimer);

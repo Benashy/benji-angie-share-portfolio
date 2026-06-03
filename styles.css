@@ -212,8 +212,12 @@ button.nav.active {
 }
 
 .hero .presence-panel #marketDataSummary {
-  flex: 1 1 520px;
+  flex: 0 1 auto;
   color: #f2eadc;
+}
+
+.hero .presence-panel .refresh-prices-action {
+  margin-right: auto;
 }
 
 .hero .presence-panel span {
@@ -227,6 +231,16 @@ button.nav.active {
 
 .presence-offline {
   color: #d8d0c5 !important;
+}
+
+.market-ok {
+  color: #b7f3cf !important;
+  font-weight: 800;
+}
+
+.market-error {
+  color: #ffb4ac !important;
+  font-weight: 800;
 }
 
 .presence-panel span {
@@ -356,6 +370,50 @@ summary span {
 table.compact {
   margin-top: 8px;
   font-size: 12px;
+}
+
+.highlight-list {
+  display: grid;
+  gap: 2px;
+}
+
+.highlight-row,
+.highlight-detail > summary {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(190px, 1fr);
+  gap: 18px;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.highlight-row > span,
+.highlight-detail > summary > span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.highlight-row > strong,
+.highlight-detail > summary > strong {
+  justify-self: end;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.highlight-detail {
+  margin-top: 0;
+}
+
+.highlight-detail > summary::marker {
+  color: var(--gold);
+}
+
+.highlight-detail > .detail-table,
+.highlight-detail > .footnote {
+  margin-top: 10px;
 }
 
 .highlight-table > tbody > tr > td:first-child {
@@ -651,6 +709,18 @@ th {
   font-weight: 800;
 }
 
+.save-banner.save-error {
+  color: var(--red);
+  background: #fde7e5;
+  border-color: #f2aaa4;
+}
+
+.save-banner.save-warning {
+  color: var(--amber);
+  background: #fff4d8;
+  border-color: #eed08a;
+}
+
 .conflict {
   color: var(--red);
   background: #fde7e5;
@@ -666,6 +736,18 @@ th {
   }
 
   .hero-total {
+    text-align: left;
+  }
+
+  .highlight-row,
+  .highlight-detail > summary {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .highlight-row > strong,
+  .highlight-detail > summary > strong {
+    justify-self: start;
     text-align: left;
   }
 }
