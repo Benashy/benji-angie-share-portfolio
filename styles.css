@@ -347,6 +347,31 @@ table.compact {
   font-size: 12px;
 }
 
+.highlight-table > tbody > tr > td:first-child {
+  width: 46%;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.highlight-table > tbody > tr > td:last-child {
+  width: 54%;
+  text-align: right;
+}
+
+.highlight-table details summary {
+  text-align: left;
+}
+
+.detail-table th,
+.detail-table td {
+  text-align: left;
+}
+
+.detail-table th:last-child,
+.detail-table td:last-child {
+  text-align: right;
+}
+
 .total-row td {
   border-top: 3px double var(--gold);
   font-weight: 760;
@@ -520,6 +545,19 @@ th[data-sort]::after {
 .owner-breakdown-row.total {
   border-top: 3px double var(--gold);
   font-weight: 800;
+}
+
+.audit-detail-row pre {
+  margin: 8px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  color: #2b241d;
+  background: #fffdf8;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 12px;
+  white-space: pre-wrap;
 }
 
 .refresh-prices-action {

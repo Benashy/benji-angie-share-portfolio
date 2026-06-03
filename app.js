@@ -525,7 +525,7 @@ function renderDashboard(portfolio) {
   const pensionDetails = pensions.length
     ? `<details><summary>View pension lines</summary><table class="compact"><thead><tr><th>Pension</th><th>Date</th><th>Value</th></tr></thead><tbody>${pensionRows}<tr class="total-row"><td colspan="2">British Airways pension total</td><td>${money(portfolio.pensionTotal)}</td></tr></tbody></table></details>`
     : '<p class="subtle">No pension values loaded.</p>';
-  const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
+  const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
   const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
   const fxMetrics = portfolio.prices.get("GBPUSD=X")?.metrics || {};
   const fxRows = [
@@ -543,7 +543,7 @@ function renderDashboard(portfolio) {
   }, {});
   const sectorRows = Object.entries(sectorMapRows).sort((a, b) => b[1].value - a[1].value).map(([sector, data]) => {
     const holdingRows = data.holdings.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td></tr>`).join("");
-    return `<tr><td colspan="3"><details class="sector-detail"><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${holdingRows}</tbody></table></details></td></tr>`;
+    return `<tr><td colspan="3"><details class="sector-detail"><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th></tr></thead><tbody>${holdingRows}</tbody></table></details></td></tr>`;
   }).join("");
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
@@ -557,20 +557,20 @@ function renderDashboard(portfolio) {
       <div class="card"><div class="subtle">Top holding</div><div class="metric">${top ? escapeHtml(top.ticker) : "-"}</div><p class="subtle">${top ? `${money(top.value_gbp)} / ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-"}</p></div>
     </section>
     <section class="grid two">
-      <div class="card"><h2>Portfolio Highlights</h2><table><tbody>
-        <tr><td colspan="2"><details><summary><span>Top 5 concentration</span><span>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</span></summary><table class="compact"><tbody>${topFiveRows}</tbody></table></details></td></tr>
+      <div class="card"><h2>Portfolio Highlights</h2><table class="highlight-table"><tbody>
+        <tr><td colspan="2"><details><summary><span>Top 5 concentration</span><span>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</span></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Weight</th></tr></thead><tbody>${topFiveRows}</tbody></table></details></td></tr>
         <tr><td>Equal-weight guide</td><td>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</td></tr>
-        <tr><td colspan="2"><details><summary><span>Cash</span><span>${money(portfolio.totalCash)} (${pct(cashPct)})</span></summary><table class="compact"><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details></td></tr>
-        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table></details></td></tr>
+        <tr><td colspan="2"><details><summary><span>Cash</span><span>${money(portfolio.totalCash)} (${pct(cashPct)})</span></summary><table class="compact detail-table"><thead><tr><th>Owner</th><th>Account</th><th>Value</th></tr></thead><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details></td></tr>
+        <tr><td colspan="2"><details><summary><span>FX guide</span><span>£1 = $${portfolio.fx.toFixed(4)}</span></summary><table class="compact detail-table"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table><p class="footnote">FX data refreshed ${displayDateTime(portfolio.prices.get("GBPUSD=X")?.fetched_at)} UK.</p></details></td></tr>
       </tbody></table>
       </div>
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
     <section class="grid two">
       <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase using the ledger cost basis.</p></div>
-      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Only holdings currently showing a loss are listed.</p></div>
+      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></div>
     </section>
-    <section class="card"><details class="history-detail"><summary><span>Net Worth History</span><span>${state.ledger.net_worth_snapshots?.length || 0} monthly snapshots</span></summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
+    <section class="card"><details class="history-detail"><summary><span>Net Worth History</span><span>${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshots` : "No monthly snapshots yet"}</span></summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
   `;
   bindRefreshButtons();
 }
@@ -609,8 +609,8 @@ async function ensureMonthlySnapshot(portfolio) {
   };
   const { error } = await supabaseClient.from("net_worth_snapshots").insert(snapshot);
   if (error) {
-    if (["42P01", "PGRST205", "23505"].includes(error.code)) return;
-    throw error;
+    console.warn("Net worth snapshot skipped", error);
+    return;
   }
   state.ledger.net_worth_snapshots = [snapshot, ...(state.ledger.net_worth_snapshots || [])];
 }
@@ -1087,7 +1087,24 @@ async function updateRowWithVersion(tableName, row, patch, action) {
   const next = { ...patch, version: Number(row.version || 1) + 1, updated_by: state.session.user.id, updated_at: new Date().toISOString() };
   const { data, error } = await supabaseClient.from(tableName).update(next).eq("id", row.id).eq("version", row.version).select().single();
   if (error || !data) {
-    alert("This entry changed after you opened it. Please refresh and review before saving.");
+    alert(error?.message || "This entry changed after you opened it. Please refresh and review before saving.");
+    return null;
+  }
+  await writeAudit(action, tableName, row.id, row, data);
+  return data;
+}
+
+async function softDeleteRow(tableName, row, action) {
+  const patch = {
+    deleted_at: new Date().toISOString(),
+    deleted_by: state.session.user.id,
+    version: Number(row.version || 1) + 1,
+    updated_by: state.session.user.id,
+    updated_at: new Date().toISOString()
+  };
+  const { data, error } = await supabaseClient.from(tableName).update(patch).eq("id", row.id).select().single();
+  if (error || !data) {
+    alert(`Delete failed: ${error?.message || "No row was updated."}`);
     return null;
   }
   await writeAudit(action, tableName, row.id, row, data);
@@ -1099,7 +1116,8 @@ async function softDeleteTransaction(id) {
   if (!row || row.is_locked) return;
   if (!confirm("Are you sure you want to delete this ledger entry?")) return;
   state.lastUndoneTransaction = row;
-  await updateRowWithVersion("portfolio_transactions", row, { deleted_at: new Date().toISOString(), deleted_by: state.session.user.id }, "soft_delete");
+  const deleted = await softDeleteRow("portfolio_transactions", row, "soft_delete");
+  if (!deleted) return;
   await loadCloudLedger();
   renderAll();
 }
@@ -1249,10 +1267,36 @@ async function submitTransactionEdit(event) {
 }
 
 function renderAudit() {
-  const rows = (state.ledger.audit_log || state.auditLog || []).slice(0, 100).map((row) => `
-    <tr><td>${new Date(row.event_time || row.created_at || Date.now()).toLocaleString()}</td><td>${escapeHtml(row.display_name || "")}</td><td>${escapeHtml(row.action)}</td><td>${escapeHtml(row.table_name)}</td></tr>
-  `).join("");
-  el("auditView").innerHTML = `<section class="card"><h2>Audit Log</h2><table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Area</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+  const rows = (state.ledger.audit_log || state.auditLog || []).slice(0, 100).map((row) => {
+    const summary = auditSummary(row);
+    return `
+      <tr>
+        <td>${displayDateTime(row.event_time || row.created_at || Date.now())}</td>
+        <td>${escapeHtml(row.display_name || "")}</td>
+        <td>${escapeHtml(row.action)}</td>
+        <td>${escapeHtml(row.table_name)}</td>
+        <td>${escapeHtml(summary)}</td>
+      </tr>
+      <tr class="details-row audit-detail-row">
+        <td colspan="5"><details><summary>View detail</summary><pre>${escapeHtml(JSON.stringify({ before: row.old_value, after: row.new_value }, null, 2))}</pre></details></td>
+      </tr>
+    `;
+  }).join("");
+  el("auditView").innerHTML = `<section class="card"><h2>Audit Log</h2><table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Area</th><th>Summary</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
+function auditSummary(row) {
+  const next = row.new_value || {};
+  const old = row.old_value || {};
+  if (row.action === "edit") {
+    const changed = Object.keys(next).filter((key) => JSON.stringify(next[key]) !== JSON.stringify(old[key]) && !["updated_at", "updated_by", "version"].includes(key));
+    return changed.length ? `Changed ${changed.slice(0, 4).join(", ")}${changed.length > 4 ? "..." : ""}` : "Edited";
+  }
+  if (row.action === "soft_delete") return `Deleted ${next.ticker || ""} ${next.type || ""}`.trim();
+  if (row.table_name === "portfolio_transactions") return `${next.type || row.action} ${next.ticker || ""} ${money(next.amount_gbp)}`.trim();
+  if (row.table_name === "manual_values") return `${next.account || "Manual value"} ${money(next.value_gbp)}`;
+  if (row.table_name === "pension_values") return `${next.name || "Pension"} ${money(next.value_gbp)}`;
+  return row.action || "";
 }
 
 function bindNavigation() {
