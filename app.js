@@ -21,7 +21,9 @@ const state = {
   marketRefreshTone: "",
   marketMessageTimer: null,
   marketRefreshing: false,
+  marketRefreshPromise: null,
   autoRefreshTimer: null,
+  marketAgeTimer: null,
   initialPriceRefreshDone: false,
   pendingCashConfirm: null,
   lastUndoneTransaction: null
@@ -55,7 +57,7 @@ const sectorMap = {
   HWM: "Industrials",
   VUAA: "Broad Market ETF",
   SGLN: "Commodities / Gold",
-  WXBT: "Bitcoin ETF",
+  WXBT: "Crypto",
   Crypto: "Crypto"
 };
 
@@ -146,6 +148,11 @@ const holdingNameMap = {
   VUAA: "Vanguard S&P 500 USD",
   WXBT: "Bitcoin ETF"
 };
+
+function displayHoldingName(ticker, holding) {
+  if (ticker === "Crypto") return "Crypto (Revolut)";
+  return holding || holdingNameMap[ticker] || ticker;
+}
 
 function statusBadge(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '<span class="badge neutral">Unknown</span>';
@@ -239,6 +246,18 @@ function updateMarketDataSummary(portfolio) {
     target.classList.toggle("market-ok", state.marketRefreshTone === "success");
     target.classList.toggle("market-error", state.marketRefreshTone === "error" || (!state.marketRefreshMessage && marketRefreshIsOverHour(portfolio)));
   }
+}
+
+function updateLiveMarketAgeLabels(portfolio = calculatePortfolio()) {
+  updateMarketDataSummary(portfolio);
+  const fxFetchedAt = portfolio.prices.get("GBPUSD=X")?.fetched_at;
+  const fxUpdated = refreshAgeText(fxFetchedAt);
+  const fxFreshClass = fxUpdated === "more than an hour ago" ? "market-error" : fxUpdated === "not refreshed" ? "" : "market-ok";
+  document.querySelectorAll("[data-refresh-age='fx']").forEach((node) => {
+    node.textContent = `FX data refreshed ${fxUpdated}.`;
+    node.classList.toggle("market-ok", fxFreshClass === "market-ok");
+    node.classList.toggle("market-error", fxFreshClass === "market-error");
+  });
 }
 
 function setMarketRefreshMessage(text, tone = "", clearAfterMs = null) {
@@ -602,8 +621,16 @@ function renderAll() {
   renderAudit();
   showView(state.activeView);
   placePresenceInHeader();
-  updateMarketDataSummary(portfolio);
+  updateLiveMarketAgeLabels(portfolio);
+  startMarketAgeTicker();
   startAutoRefresh(portfolio);
+}
+
+function startMarketAgeTicker() {
+  if (state.marketAgeTimer) return;
+  state.marketAgeTimer = window.setInterval(() => {
+    if (state.session) updateLiveMarketAgeLabels();
+  }, 30000);
 }
 
 function placePresenceInHeader() {
@@ -622,7 +649,7 @@ function renderDashboard(portfolio) {
   const pensionDetails = pensions.length
     ? `<details><summary>View pension lines</summary><table class="compact"><thead><tr><th>Pension</th><th>Date</th><th>Value</th></tr></thead><tbody>${pensionRows}<tr class="total-row"><td colspan="2">Pension total</td><td>${money(portfolio.pensionTotal)}</td></tr></tbody></table></details>`
     : '<p class="subtle">No pension values loaded.</p>';
-  const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
+  const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
   const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
   const fxMetrics = portfolio.prices.get("GBPUSD=X")?.metrics || {};
   const fxRows = [
@@ -639,12 +666,12 @@ function renderDashboard(portfolio) {
     return acc;
   }, {});
   const sectorRows = Object.entries(sectorMapRows).sort((a, b) => b[1].value - a[1].value).map(([sector, data]) => {
-    const holdingRows = data.holdings.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td></tr>`).join("");
+    const holdingRows = data.holdings.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td></tr>`).join("");
     return `<tr><td colspan="3"><details class="sector-detail"><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th></tr></thead><tbody>${holdingRows}</tbody></table></details></td></tr>`;
   }).join("");
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
-  const performanceRows = (items, tone) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(item.holding)}</td><td>${money(item.value_gbp)}</td><td><span class="${tone}">${pctSigned(item.gain_pct)}</span></td></tr>`).join("") || '<tr><td colspan="4">None</td></tr>';
+  const performanceRows = (items, tone) => items.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td><td><span class="${tone}">${pctSigned(item.gain_pct)}</span></td><td><span class="${tone}">${moneySigned(item.gain_gbp)}</span></td></tr>`).join("") || '<tr><td colspan="5">None</td></tr>';
   const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td><td>${formatHistoryChange(row.change_1m)}</td><td>${formatHistoryChange(row.change_6m)}</td><td>${formatHistoryChange(row.change_12m)}</td></tr>`).join("");
   const topHoldingText = top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-";
   const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
@@ -671,7 +698,7 @@ function renderDashboard(portfolio) {
           <details class="highlight-detail">
             <summary><span>FX guide</span><strong>£1 = $${portfolio.fx.toFixed(4)}</strong></summary>
             <table class="compact detail-table"><thead><tr><th>Period</th><th>Rate then</th><th>Change</th></tr></thead><tbody>${fxRows}</tbody></table>
-            <p class="footnote fx-freshness${fxFreshClass}">FX data refreshed ${fxUpdated}.</p>
+            <p class="footnote fx-freshness${fxFreshClass}" data-refresh-age="fx">FX data refreshed ${fxUpdated}.</p>
             <p class="footnote">A stronger pound improves buying power when investing into US equities; a stronger dollar increases the sterling value of existing US holdings and is beneficial when selling back into pounds.</p>
           </details>
         </div>
@@ -679,10 +706,10 @@ function renderDashboard(portfolio) {
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
     <section class="grid two">
-      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase.</p></div>
-      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></div>
+      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>% since purchase</th><th>GBP since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase.</p></div>
+      <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>% since purchase</th><th>GBP since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></div>
     </section>
-    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
+    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on the first signed-in use of that month.</p></details></section>
   `;
   bindRefreshButtons();
 }
@@ -787,7 +814,7 @@ function renderHoldings(portfolio) {
     return `
       <tr class="holding-main-row" data-key="${detailKey}">
         <td data-sort-value="${escapeHtml(item.ticker)}"><strong>${escapeHtml(item.ticker)}</strong></td>
-        <td data-sort-value="${escapeHtml(item.holding)}">${escapeHtml(item.holding)}</td>
+        <td data-sort-value="${escapeHtml(displayHoldingName(item.ticker, item.holding))}">${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td>
         <td data-sort-value="${escapeHtml(item.owner)}">${ownerCell}</td>
         <td data-sort-value="${escapeHtml(item.account)}">${escapeHtml(item.account)}</td>
         <td data-sort-value="${Number(item.quantity || 0)}">${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
@@ -827,7 +854,20 @@ function bindRefreshButtons() {
 async function refreshMarketPrices(options = {}) {
   const buttons = [...document.querySelectorAll(".refresh-prices-action")];
   if (!supabaseClient || !state.session) return;
-  if (state.marketRefreshing) return;
+  if (state.marketRefreshing) {
+    if (!options.quiet) {
+      setMarketRefreshMessage("Refreshing market prices...");
+      try {
+        await state.marketRefreshPromise;
+        await loadCloudLedger();
+        renderAll();
+        setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}`, "success", 15000);
+      } catch (error) {
+        setMarketRefreshMessage(`Market refresh failed: ${error.message} · ${marketFreshnessText(calculatePortfolio())}`, "error");
+      }
+    }
+    return;
+  }
   state.marketRefreshing = true;
   if (!options.quiet) {
     setMarketRefreshMessage("Refreshing market prices...");
@@ -856,13 +896,21 @@ async function refreshMarketPrices(options = {}) {
       return payload;
     });
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Market refresh is taking too long. Please try again.")), 45000));
-    const data = await Promise.race([invokePromise, timeoutPromise]);
-    await loadCloudLedger();
-    await ensureMonthlySnapshot(calculatePortfolio());
+    state.marketRefreshPromise = Promise.race([invokePromise, timeoutPromise]);
+    const data = await state.marketRefreshPromise;
+    try {
+      await Promise.race([
+        loadCloudLedger(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Market data saved, but the app reload took too long.")), 15000))
+      ]);
+    } catch (reloadError) {
+      console.warn("Market data refresh completed but reload was delayed", reloadError);
+    }
+    ensureMonthlySnapshot(calculatePortfolio()).catch((snapshotError) => console.warn("Net worth snapshot skipped after market refresh", snapshotError));
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
     if (!options.quiet) {
-      setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}${skipped}`, "success", 15000);
       renderAll();
+      setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}${skipped}`, "success", 15000);
     }
   } catch (error) {
     if (!options.quiet) {
@@ -870,6 +918,7 @@ async function refreshMarketPrices(options = {}) {
     }
   } finally {
     state.marketRefreshing = false;
+    state.marketRefreshPromise = null;
     document.querySelectorAll(".refresh-prices-action").forEach((button) => {
       button.disabled = false;
     });
@@ -880,12 +929,12 @@ function startAutoRefresh(portfolio) {
   if (!isConfigured || !state.session) return;
   if (!state.initialPriceRefreshDone && marketRefreshIsStale(portfolio)) {
     state.initialPriceRefreshDone = true;
-    window.setTimeout(() => refreshMarketPrices({ auto: true }), 1200);
+    window.setTimeout(() => refreshMarketPrices({ auto: true, quiet: true }), 1200);
   }
   if (state.autoRefreshTimer) return;
   state.autoRefreshTimer = window.setInterval(() => {
     if (document.visibilityState === "visible" && state.session) {
-      refreshMarketPrices({ auto: true });
+      refreshMarketPrices({ auto: true, quiet: true });
     }
   }, autoRefreshMinutes * 60 * 1000);
 }
@@ -1212,7 +1261,7 @@ async function submitManual(event, portfolio) {
       await insertRow("manual_values", {
         date: data.date,
         ticker: "Crypto",
-        holding: "Crypto",
+        holding: "Crypto (Revolut)",
         owner: "Benji",
         account: "Benji - Revolut - Crypto",
         value_gbp: valueGbp,
@@ -1629,6 +1678,10 @@ function bindAuth() {
     if (state.autoRefreshTimer) {
       window.clearInterval(state.autoRefreshTimer);
       state.autoRefreshTimer = null;
+    }
+    if (state.marketAgeTimer) {
+      window.clearInterval(state.marketAgeTimer);
+      state.marketAgeTimer = null;
     }
     if (supabaseClient) await supabaseClient.auth.signOut();
   });
