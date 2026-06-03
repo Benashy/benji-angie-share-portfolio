@@ -205,6 +205,10 @@ function marketRefreshIsStale(portfolio, minutes = autoRefreshMinutes) {
   return rows.some((row) => Date.now() - new Date(row.fetched_at).getTime() > minutes * 60 * 1000);
 }
 
+function marketRefreshIsOverHour(portfolio) {
+  return marketRefreshIsStale(portfolio, 60);
+}
+
 function refreshAgeText(value) {
   if (!value) return "not refreshed";
   const date = new Date(value);
@@ -227,7 +231,7 @@ function updateMarketDataSummary(portfolio) {
   if (target) {
     target.textContent = state.marketRefreshMessage || marketFreshnessText(portfolio);
     target.classList.toggle("market-ok", state.marketRefreshTone === "success");
-    target.classList.toggle("market-error", state.marketRefreshTone === "error");
+    target.classList.toggle("market-error", state.marketRefreshTone === "error" || (!state.marketRefreshMessage && marketRefreshIsOverHour(portfolio)));
   }
 }
 
@@ -628,11 +632,11 @@ function renderDashboard(portfolio) {
   const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td></tr>`).join("");
   const topHoldingText = top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-";
   const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
-  const fxFreshClass = fxUpdated === "not refreshed" || fxUpdated === "more than an hour ago" ? "" : " market-ok";
+  const fxFreshClass = fxUpdated === "more than an hour ago" ? " market-error" : fxUpdated === "not refreshed" ? "" : " market-ok";
 
   el("dashboardView").innerHTML = `
     <section class="grid two hero-metrics">
-      <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) / Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
+      <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
       <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
     </section>
     <section class="grid two">
@@ -941,7 +945,7 @@ function wireTransactionForms(portfolio) {
   if (cashConfirmForm) cashConfirmForm.addEventListener("submit", (event) => submitCashConfirmation(event, portfolio));
   el("cashConfirmDisregard")?.addEventListener("click", () => {
     state.pendingCashConfirm = null;
-    setSaveMessage("cash", `Cash confirmation skipped at ${shortUkTime()}.`, "warning");
+    setSaveMessage("cash", `Cash confirmation skipped at ${shortUkTime()} UK.`, "warning");
     renderAll();
   });
 }
@@ -1050,7 +1054,7 @@ async function submitEquity(event, portfolio) {
       updated_by: state.session.user.id
     };
     await insertRow("portfolio_transactions", row, "add");
-    setSaveMessage("equity", `${data.type === "buy" ? "Buy" : "Sell"} saved: ${row.ticker} ${money(amountGbp)} at ${shortUkTime()}.`);
+    setSaveMessage("equity", `${data.type === "buy" ? "Buy" : "Sell"} saved: ${row.ticker} ${money(amountGbp)} at ${shortUkTime()} UK.`);
     state.pendingCashConfirm = { owner: data.owner, account: data.account };
     form.reset();
     await loadCloudLedger();
@@ -1093,7 +1097,7 @@ async function submitCashConfirmation(event, portfolio) {
     }, "cash_reconcile");
   }
   state.pendingCashConfirm = null;
-  setSaveMessage("cash", `Cash balance confirmed at ${shortUkTime()}.`);
+  setSaveMessage("cash", `Cash balance confirmed at ${shortUkTime()} UK.`);
   await loadCloudLedger();
   renderAll();
 }
@@ -1126,7 +1130,7 @@ async function submitCash(event, portfolio) {
       updated_by: state.session.user.id
     };
     await insertRow("portfolio_transactions", row, "add");
-    setSaveMessage("cash", `${data.type === "deposit" ? "Cash deposit" : "Cash withdrawal"} saved: ${money(amountGbp)} to ${data.account} at ${shortUkTime()}.`);
+    setSaveMessage("cash", `${data.type === "deposit" ? "Cash deposit" : "Cash withdrawal"} saved: ${money(amountGbp)} to ${data.account} at ${shortUkTime()} UK.`);
     form.reset();
     await loadCloudLedger();
     renderAll();
@@ -1180,7 +1184,7 @@ async function submitManual(event, portfolio) {
         updated_by: state.session.user.id
       }, "manual_update");
     }
-    setSaveMessage("manual", `Manual value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()}.`);
+    setSaveMessage("manual", `Manual value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()} UK.`);
     form.reset();
     await loadCloudLedger();
     renderAll();
@@ -1244,7 +1248,7 @@ async function softDeleteTransaction(id, trigger) {
     }
     return;
   }
-  setSaveMessage("ledger", `Deleted: ${row.ticker} ${row.type} ${money(row.amount_gbp)} at ${shortUkTime()}.`);
+  setSaveMessage("ledger", `Deleted: ${row.ticker} ${row.type} ${money(row.amount_gbp)} at ${shortUkTime()} UK.`);
   await loadCloudLedger();
   renderAll();
 }
