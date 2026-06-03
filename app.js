@@ -211,7 +211,7 @@ function refreshAgeText(value) {
   if (Number.isNaN(date.getTime())) return "not refreshed";
   const minutes = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
   if (minutes >= 60) return "more than an hour ago";
-  return `${shortUkTime(date)} UK`;
+  return `${shortUkTime(date)} UK (${minutes === 0 ? "just now" : `${minutes} min ago`})`;
 }
 
 function marketFreshnessText(portfolio) {
@@ -264,7 +264,7 @@ function setSaveMessage(area, text, tone = "success") {
     delete state.saveMessages[area];
     const banner = document.querySelector(`[data-save-area="${area}"]`);
     if (banner) banner.remove();
-  }, 15000);
+  }, 10000);
 }
 
 function saveBanner(area) {
@@ -573,7 +573,7 @@ function renderAll() {
   const portfolio = calculatePortfolio();
   el("headlineNetWorth").textContent = money(portfolio.netWorthTotal);
   if (isConfigured && state.session) {
-    el("statusLine").textContent = `Signed in as ${currentUserName()} · Shared cloud portfolio · ${displayDateTime(new Date())} UK`;
+    el("statusLine").textContent = `Signed in as ${currentUserName()}`;
   }
   renderDashboard(portfolio);
   renderHoldings(portfolio);
@@ -854,7 +854,7 @@ function renderTransaction(portfolio) {
           <label>Owner</label>${ownerSelect(disabled)}
           <label>Account</label><select name="account" required ${disabled}></select>
           <label>Action</label><select name="type" ${disabled}><option value="buy">Buy</option><option value="sell">Sell</option></select>
-          <label>Ticker</label><div class="lookup-row"><input name="ticker" class="ticker-input" required ${disabled}><button type="button" class="lookup-button" ${disabled}>Find</button></div><div class="lookup-status"></div>
+          <label>Ticker</label><input name="ticker" class="ticker-input" required ${disabled}><div class="lookup-status"></div>
           <label>Holding name</label><input name="holding" required ${disabled}>
           <label>Quantity of shares</label><input name="quantity" type="number" step="any" required ${disabled}>
           <label>Price per share</label><input name="price" type="number" step="any" required ${disabled}>
@@ -973,6 +973,7 @@ function wireTickerLookup(form, portfolio) {
     }
   };
   input.addEventListener("blur", () => update());
+  input.addEventListener("change", () => update());
   form.querySelector(".lookup-button")?.addEventListener("click", update);
 }
 
@@ -1243,6 +1244,7 @@ async function softDeleteTransaction(id, trigger) {
     }
     return;
   }
+  setSaveMessage("ledger", `Deleted: ${row.ticker} ${row.type} ${money(row.amount_gbp)} at ${shortUkTime()}.`);
   await loadCloudLedger();
   renderAll();
 }
@@ -1321,7 +1323,7 @@ function renderLedger() {
   ].sort((a, b) => dateValue(b.date) - dateValue(a.date)).map((row) => `
     <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.currency)}</td><td><span class="subtle">Audit</span></td></tr>
   `).join("");
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2><p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table style="margin-top:12px"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></div></section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table style="margin-top:12px"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></div></section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);

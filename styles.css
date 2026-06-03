@@ -217,7 +217,8 @@ button.nav.active {
 }
 
 .hero .presence-panel .refresh-prices-action {
-  margin-right: auto;
+  margin-right: 0;
+  flex: 0 0 auto;
 }
 
 .hero .presence-panel span {
@@ -225,7 +226,7 @@ button.nav.active {
 }
 
 .presence-online {
-  color: #b7f3cf !important;
+  color: var(--green) !important;
   font-weight: 800;
 }
 
@@ -234,7 +235,7 @@ button.nav.active {
 }
 
 .market-ok {
-  color: #b7f3cf !important;
+  color: var(--green) !important;
   font-weight: 800;
 }
 
@@ -380,12 +381,35 @@ table.compact {
 .highlight-row,
 .highlight-detail > summary {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) minmax(190px, 1fr);
+  grid-template-columns: 18px minmax(170px, 1fr) minmax(190px, 1fr);
   gap: 18px;
   align-items: center;
   min-height: 40px;
   padding: 8px 0;
   border-bottom: 1px solid var(--line);
+}
+
+.highlight-row::before {
+  content: "";
+}
+
+.highlight-detail > summary {
+  list-style: none;
+}
+
+.highlight-detail > summary::-webkit-details-marker {
+  display: none;
+}
+
+.highlight-detail > summary::before {
+  content: "▸";
+  color: var(--gold);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.highlight-detail[open] > summary::before {
+  content: "▾";
 }
 
 .highlight-row > span,
@@ -741,12 +765,13 @@ th {
 
   .highlight-row,
   .highlight-detail > summary {
-    grid-template-columns: 1fr;
+    grid-template-columns: 18px 1fr;
     gap: 4px;
   }
 
   .highlight-row > strong,
   .highlight-detail > summary > strong {
+    grid-column: 2;
     justify-self: start;
     text-align: left;
   }
