@@ -1599,7 +1599,7 @@ function showView(view) {
 
 function wireSortableTables() {
   document.querySelectorAll("table.sortable th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
+    th.onclick = () => {
       const table = th.closest("table");
       const tbody = table.querySelector("tbody");
       const columnIndex = th.cellIndex;
@@ -1622,7 +1622,7 @@ function wireSortableTables() {
         tbody.appendChild(row);
         if (row.dataset.key && detailRows.has(row.dataset.key)) tbody.appendChild(detailRows.get(row.dataset.key));
       });
-    });
+    };
   });
 }
 
