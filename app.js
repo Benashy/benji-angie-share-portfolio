@@ -460,6 +460,7 @@ function setupRealtime() {
       "postgres_changes",
       { event: "*", schema: "public", table: tableName },
       (payload) => {
+        if (tableName === "market_prices") return;
         const actor = payload.new?.updated_by || payload.new?.created_by || payload.old?.updated_by;
         if (actor !== state.session?.user?.id) {
           state.dirtyCloud = true;
@@ -478,6 +479,8 @@ function setupPresence() {
   channel.on("presence", { event: "sync" }, () => {
     const presence = channel.presenceState();
     const names = Object.values(presence).flat().map((item) => item.display_name);
+    el("benjiPresence").className = names.includes("Benji") ? "presence-online" : "presence-offline";
+    el("angiePresence").className = names.includes("Angie") ? "presence-online" : "presence-offline";
     el("benjiPresence").textContent = `Benji ${names.includes("Benji") ? "online" : "offline"}`;
     el("angiePresence").textContent = `Angie ${names.includes("Angie") ? "online" : "offline"}`;
   });
@@ -551,13 +554,13 @@ function renderDashboard(portfolio) {
   const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td></tr>`).join("");
 
   el("dashboardView").innerHTML = `
-    <section class="grid">
+    <section class="grid two hero-metrics">
       <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) / Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
       <div class="card"><div class="subtle">British Airways pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
-      <div class="card"><div class="subtle">Top holding</div><div class="metric">${top ? escapeHtml(top.ticker) : "-"}</div><p class="subtle">${top ? `${money(top.value_gbp)} / ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-"}</p></div>
     </section>
     <section class="grid two">
       <div class="card"><h2>Portfolio Highlights</h2><table class="highlight-table"><tbody>
+        <tr><td>Top holding</td><td>${top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-"}</td></tr>
         <tr><td colspan="2"><details><summary><span>Top 5 concentration</span><span>${pct(portfolio.accessibleTotal ? topFiveValue / portfolio.accessibleTotal : 0)}</span></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Weight</th></tr></thead><tbody>${topFiveRows}</tbody></table></details></td></tr>
         <tr><td>Equal-weight guide</td><td>${pct(portfolio.combined.length ? 1 / portfolio.combined.length : 0)} across ${portfolio.combined.length} holdings</td></tr>
         <tr><td colspan="2"><details><summary><span>Cash</span><span>${money(portfolio.totalCash)} (${pct(cashPct)})</span></summary><table class="compact detail-table"><thead><tr><th>Owner</th><th>Account</th><th>Value</th></tr></thead><tbody>${cashRows}<tr class="total-row"><td colspan="2">Cash total</td><td>${money(portfolio.totalCash)}</td></tr></tbody></table></details></td></tr>
@@ -567,10 +570,10 @@ function renderDashboard(portfolio) {
       <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
     <section class="grid two">
-      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase using the ledger cost basis.</p></div>
+      <div class="card gain-card"><h2>Top Gainers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table><p class="footnote">Performance is measured since purchase.</p></div>
       <div class="card loss-card"><h2>Top Losers</h2><table><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th><th>Since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></div>
     </section>
-    <section class="card"><details class="history-detail"><summary><span>Net Worth History</span><span>${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshots` : "No monthly snapshots yet"}</span></summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
+    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on first signed-in use.</p></details></section>
   `;
   bindRefreshButtons();
 }
@@ -1165,7 +1168,7 @@ async function writeAudit(action, tableName, recordId, oldValue, newValue) {
 
 function renderLedger() {
   const editCard = state.editingTransaction ? renderEditTransactionCard(state.editingTransaction) : "";
-  const transactionRows = [...state.ledger.transactions].sort((a, b) => {
+  const transactionRows = activeRows(state.ledger.transactions).sort((a, b) => {
     const dateDiff = dateValue(b.date) - dateValue(a.date);
     if (dateDiff) return dateDiff;
     return new Date(b.created_at || 0) - new Date(a.created_at || 0);
@@ -1175,8 +1178,9 @@ function renderLedger() {
       ? '<span class="subtle">Locked</span>'
       : `<div class="inline-row"><button class="secondary small" data-edit="${tx.id}">Edit</button><button class="danger small" data-delete="${tx.id}">Delete</button></div>`;
     return `
-      <tr class="${tx.deleted_at ? "deleted" : ""}">
+      <tr>
         <td>${displayDate(tx.date)}</td>
+        <td>${displayDateTime(tx.updated_at || tx.created_at)}</td>
         <td>${escapeHtml(tx.type)}</td>
         <td>${escapeHtml(tx.owner)}</td>
         <td>${escapeHtml(tx.account)}</td>
@@ -1190,12 +1194,12 @@ function renderLedger() {
     `;
   }).join("");
   const manualRows = [
-    ...activeRows(state.ledger.manual_values).map((row) => ({ date: row.date, type: "manual valuation", owner: row.owner, account: row.account, ticker: row.ticker, quantity: "-", price: "-", amount: row.value_gbp, currency: row.currency_entered || "GBP" })),
-    ...activeRows(state.ledger.pensions).map((row) => ({ date: row.date, type: "pension valuation", owner: "Benji", account: row.name, ticker: "PENSION", quantity: "-", price: "-", amount: row.value_gbp, currency: "GBP" }))
+    ...activeRows(state.ledger.manual_values).map((row) => ({ date: row.date, created_at: row.updated_at || row.created_at, type: "manual valuation", owner: row.owner, account: row.account, ticker: row.ticker, quantity: "-", price: "-", amount: row.value_gbp, currency: row.currency_entered || "GBP" })),
+    ...activeRows(state.ledger.pensions).map((row) => ({ date: row.date, created_at: row.updated_at || row.created_at, type: "pension valuation", owner: "Benji", account: row.name, ticker: "PENSION", quantity: "-", price: "-", amount: row.value_gbp, currency: "GBP" }))
   ].sort((a, b) => dateValue(b.date) - dateValue(a.date)).map((row) => `
-    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.currency)}</td><td><span class="subtle">Audit</span></td></tr>
+    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.currency)}</td><td><span class="subtle">Audit</span></td></tr>
   `).join("");
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2><p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><button id="undoLatestButton" class="secondary small">Undo latest transaction</button><button id="redoLatestButton" class="secondary small">Redo latest transaction</button></div><table style="margin-top:12px"><thead><tr><th>Date</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2><p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><button id="undoLatestButton" class="secondary small">Undo latest transaction</button><button id="redoLatestButton" class="secondary small">Redo latest transaction</button></div><div class="table-shell"><table style="margin-top:12px"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${transactionRows}${manualRows}</tbody></table></div></section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("undoLatestButton")?.addEventListener("click", undoLatestTransaction);
   el("redoLatestButton")?.addEventListener("click", redoLatestTransaction);
@@ -1245,16 +1249,28 @@ async function submitTransactionEdit(event) {
   const data = Object.fromEntries(new FormData(form).entries());
   const row = state.ledger.transactions.find((item) => item.id === data.id);
   if (!row) return;
+  const nextType = data.type;
+  const nextAmount = Number(data.amount_gbp || 0);
+  const nextQuantity = Number(data.quantity || 0);
+  const nextPrice = Number(data.price || 0);
+  if ((nextType === "deposit" || nextType === "withdrawal") && nextAmount <= 0) {
+    alert("Cash transactions need an amount greater than zero.");
+    return;
+  }
+  if ((nextType === "buy" || nextType === "sell") && (nextQuantity <= 0 || nextPrice <= 0 || nextAmount <= 0)) {
+    alert("Equity transactions need quantity, price and amount greater than zero.");
+    return;
+  }
   const patch = {
     date: data.date,
     owner: data.owner,
     account: data.account,
-    type: data.type,
+    type: nextType,
     ticker: data.ticker.toUpperCase().trim(),
     holding: data.holding.trim(),
-    quantity: Number(data.quantity || 0),
-    price: Number(data.price || 0),
-    amount_gbp: Number(data.amount_gbp || 0),
+    quantity: nextQuantity,
+    price: nextPrice,
+    amount_gbp: nextAmount,
     currency: data.currency,
     notes: data.notes || ""
   };
@@ -1307,6 +1323,7 @@ function bindNavigation() {
     });
   });
   el("refreshCloudButton").addEventListener("click", async () => {
+    state.marketRefreshMessage = "";
     await loadCloudLedger();
     renderAll();
   });

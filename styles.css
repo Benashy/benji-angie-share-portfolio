@@ -95,7 +95,7 @@ body.auth-only .auth-card {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 20px;
-  padding: 30px;
+  padding: 26px 28px;
   color: white;
   background: linear-gradient(120deg, #0d0d0c 0%, #141312 45%, #1b2430 100%);
   border: 1px solid rgba(217, 197, 159, .36);
@@ -105,7 +105,8 @@ body.auth-only .auth-card {
 
 .hero h1 {
   margin: 0;
-  font-size: 34px;
+  font-size: 30px;
+  line-height: 1.08;
 }
 
 .hero p {
@@ -198,6 +199,7 @@ button.nav.active {
 .hero .presence-panel {
   grid-column: 1 / -1;
   justify-content: flex-start;
+  gap: 10px;
   margin-top: 0;
   padding: 0;
   background: transparent;
@@ -210,12 +212,21 @@ button.nav.active {
 }
 
 .hero .presence-panel #marketDataSummary {
-  flex: 1 1 420px;
+  flex: 1 1 520px;
   color: #f2eadc;
 }
 
 .hero .presence-panel span {
   color: #d8d0c5;
+}
+
+.presence-online {
+  color: #b7f3cf !important;
+  font-weight: 800;
+}
+
+.presence-offline {
+  color: #d8d0c5 !important;
 }
 
 .presence-panel span {
@@ -348,18 +359,26 @@ table.compact {
 }
 
 .highlight-table > tbody > tr > td:first-child {
-  width: 46%;
+  width: 48%;
   color: var(--muted);
   font-weight: 700;
 }
 
 .highlight-table > tbody > tr > td:last-child {
-  width: 54%;
+  width: 52%;
   text-align: right;
 }
 
-.highlight-table details summary {
+.highlight-table details > summary {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, auto);
+  gap: 14px;
+  align-items: center;
   text-align: left;
+}
+
+.highlight-table details > summary span:last-child {
+  text-align: right;
 }
 
 .detail-table th,
