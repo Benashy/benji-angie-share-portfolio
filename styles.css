@@ -562,23 +562,25 @@ table.compact {
   background: #fbf7ef;
 }
 
-.ledger-note-row td {
-  padding: 0 10px 10px;
-  background: #fbf7ef;
-  border-top: 0;
+.ledger-action-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 150px;
 }
 
 .ledger-note-detail {
   margin: 0;
-  padding: 8px 10px;
-  background: #fffdf8;
-  border: 1px solid rgba(216, 208, 197, .82);
-  border-radius: 8px;
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 
 .ledger-note-detail summary {
   cursor: pointer;
-  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  color: var(--ink);
   font-size: 12px;
   font-weight: 800;
 }
@@ -589,8 +591,15 @@ table.compact {
 
 .ledger-note-detail p {
   margin: 8px 0 0;
+  max-width: 320px;
+  padding: 9px 10px;
   color: var(--ink);
+  background: #fffdf8;
+  border: 1px solid rgba(216, 208, 197, .82);
+  border-radius: 8px;
   font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 8px 18px rgba(42, 35, 28, .08);
 }
 
 .ledger-history-detail {

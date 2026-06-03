@@ -1346,19 +1346,11 @@ function renderLedger() {
   const editCard = state.editingTransaction ? renderEditTransactionCard(state.editingTransaction) : "";
   const renderTransactionRow = (tx) => {
     const isCash = tx.type === "deposit" || tx.type === "withdrawal";
-    const actions = tx.is_locked || !isConfigured
+    const actionButtons = tx.is_locked || !isConfigured
       ? '<span class="subtle">Locked</span>'
       : `<div class="inline-row"><button class="secondary small" data-edit="${tx.id}">Edit</button><button class="danger small" data-delete="${tx.id}">Delete</button></div>`;
-    const noteRow = tx.notes ? `
-      <tr class="ledger-note-row">
-        <td colspan="11">
-          <details class="ledger-note-detail">
-            <summary>Notes</summary>
-            <p>${escapeHtml(tx.notes)}</p>
-          </details>
-        </td>
-      </tr>
-    ` : "";
+    const noteDetail = tx.notes ? `<details class="ledger-note-detail"><summary>Notes</summary><p>${escapeHtml(tx.notes)}</p></details>` : "";
+    const actions = `<div class="ledger-action-stack">${actionButtons}${noteDetail}</div>`;
     return `
       <tr>
         <td>${displayDate(tx.date)}</td>
@@ -1373,7 +1365,6 @@ function renderLedger() {
         <td>${escapeHtml(tx.currency)}</td>
         <td>${actions}</td>
       </tr>
-      ${noteRow}
     `;
   };
   const renderValuationRow = (row) => `
