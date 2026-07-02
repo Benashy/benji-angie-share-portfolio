@@ -193,6 +193,33 @@ function marketPriceMap() {
   return new Map((state.ledger.market_prices || []).map((row) => [row.ticker, row]));
 }
 
+function transactionDateValue(value) {
+  if (!value) return 0;
+  const raw = String(value).trim();
+  let match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
+  match = raw.match(/^(\d{1,2})[.-](\d{1,2})[.-](\d{2}|\d{4})$/);
+  if (match) {
+    const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
+    return new Date(year, Number(match[2]) - 1, Number(match[1])).getTime();
+  }
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function transactionTypeOrder(type) {
+  return { opening: 0, buy: 1, sell: 2, deposit: 3, withdrawal: 4 }[type] ?? 9;
+}
+
+function orderedTransactions(rows) {
+  return [...rows].sort((a, b) =>
+    transactionDateValue(a.date) - transactionDateValue(b.date)
+    || transactionTypeOrder(a.type) - transactionTypeOrder(b.type)
+    || String(a.created_at || "").localeCompare(String(b.created_at || ""))
+    || String(a.id || "").localeCompare(String(b.id || ""))
+  );
+}
+
 function priceIsFresh(row) {
   if (!row?.fetched_at) return false;
   return Date.now() - new Date(row.fetched_at).getTime() < priceStalenessMinutes * 60 * 1000;
@@ -323,7 +350,7 @@ function calculatePortfolio() {
   const fxRow = prices.get("GBPUSD=X");
   const fx = Number(fxRow?.price || state.ledger.fx || 1.3427);
 
-  for (const tx of activeRows(state.ledger.transactions)) {
+  for (const tx of orderedTransactions(activeRows(state.ledger.transactions))) {
     const key = `${tx.owner}|${tx.account}`;
     const cashValue = cash.get(key) || { owner: tx.owner, account: tx.account, amount: 0 };
 
@@ -1409,14 +1436,14 @@ function renderLedger() {
         <td>${escapeHtml(tx.ticker)}</td>
         <td>${isCash ? "-" : Number(tx.quantity || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
         <td>${isCash ? "-" : escapeHtml(tx.price)}</td>
-        <td>${money(tx.amount_gbp)}</td>
         <td>${escapeHtml(tx.currency)}</td>
+        <td>${money(tx.amount_gbp)}</td>
         <td>${actions}</td>
       </tr>
     `;
   };
   const renderValuationRow = (row) => `
-    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.currency)}</td><td><span class="subtle">Audit</span></td></tr>
+    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${escapeHtml(row.currency)}</td><td>${money(row.amount)}</td><td><span class="subtle">Audit</span></td></tr>
   `;
   const ledgerItems = [
     ...activeRows(state.ledger.transactions).map((row) => ({
@@ -1444,10 +1471,10 @@ function renderLedger() {
   const olderLedger = olderRows ? `
     <details class="ledger-history-detail">
       <summary>Older ledger entries (${ledgerItems.length - 5})</summary>
-      <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
+      <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
     </details>
   ` : "";
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Amount</th><th>Currency</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
