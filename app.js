@@ -471,6 +471,27 @@ function aggregatePositions(positions) {
   }).sort((a, b) => b.value_gbp - a.value_gbp);
 }
 
+function accountBreakdown(portfolio) {
+  const accounts = new Map();
+  const ensure = (owner, account) => {
+    const key = `${owner}|${account}`;
+    if (!accounts.has(key)) accounts.set(key, { owner, account, invested: 0, cash: 0, total: 0 });
+    return accounts.get(key);
+  };
+  for (const position of portfolio.positions) {
+    const item = ensure(position.owner, position.account);
+    item.invested += Number(position.value_gbp || 0);
+  }
+  for (const cash of portfolio.cash) {
+    const item = ensure(cash.owner, cash.account);
+    item.cash += Number(cash.amount || 0);
+  }
+  return [...accounts.values()].map((item) => ({
+    ...item,
+    total: item.invested + item.cash
+  })).sort((a, b) => b.total - a.total);
+}
+
 async function init() {
   bindNavigation();
   bindAuth();
@@ -676,6 +697,10 @@ function renderDashboard(portfolio) {
   const pensionDetails = pensions.length
     ? `<details><summary>View pension lines</summary><table class="compact"><thead><tr><th>Pension</th><th>Date</th><th>Value</th></tr></thead><tbody>${pensionRows}<tr class="total-row"><td colspan="2">Pension total</td><td>${money(portfolio.pensionTotal)}</td></tr></tbody></table></details>`
     : '<p class="subtle">No pension values loaded.</p>';
+  const accountRows = accountBreakdown(portfolio).map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.invested)}</td><td>${money(item.cash)}</td><td>${money(item.total)}</td></tr>`).join("");
+  const accountDetails = accountRows
+    ? `<details><summary>View portfolio lines</summary><table class="compact"><thead><tr><th>Owner</th><th>Account</th><th>Invested</th><th>Cash</th><th>Total</th></tr></thead><tbody>${accountRows}<tr class="total-row"><td colspan="4">Portfolio total</td><td>${money(portfolio.accessibleTotal)}</td></tr></tbody></table></details>`
+    : '<p class="subtle">No portfolio accounts loaded.</p>';
   const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
   const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
   const fxMetrics = portfolio.prices.get("GBPUSD=X")?.metrics || {};
@@ -706,7 +731,7 @@ function renderDashboard(portfolio) {
 
   el("dashboardView").innerHTML = `
     <section class="grid two hero-metrics">
-      <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p></div>
+      <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
       <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
     </section>
     <section class="grid two">
