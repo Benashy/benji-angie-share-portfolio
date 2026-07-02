@@ -544,6 +544,11 @@ table.compact {
   font-weight: 800;
 }
 
+.neutral-text {
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .save-banner {
   margin: 0 0 12px;
   color: var(--green);

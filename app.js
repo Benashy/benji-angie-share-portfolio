@@ -1039,7 +1039,7 @@ function renderTransaction(portfolio) {
         <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
         <label>Type</label><select name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
         <label>Account / pension name</label><select name="account" ${disabled}></select>
-        <div class="transaction-total">Current value: <strong id="manualCurrent">-</strong></div>
+        <div class="transaction-total">Current value: <strong id="manualCurrent">-</strong> | Difference: <strong id="manualDifference" class="neutral-text">-</strong></div>
         <label>Currency</label><select name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
         <label>New Value</label><input name="value" type="number" step="any" required ${disabled}>
         <button ${disabled}>Save manual value</button>
@@ -1156,19 +1156,33 @@ function wireTransactionPreview(form, portfolio) {
 
 function setupManualForm(form, portfolio) {
   const update = () => {
+    const previousAccount = form.elements.account.value;
+    let currentGbp = 0;
     if (form.elements.kind.value === "crypto") {
       form.elements.account.innerHTML = '<option>Benji - Revolut - Crypto</option>';
       const current = latestManualValue("Crypto", "Benji", "Benji - Revolut - Crypto");
-      const currentGbp = Number(current?.value_gbp || 0);
+      currentGbp = Number(current?.value_gbp || 0);
       el("manualCurrent").textContent = `${money(currentGbp)} / ${usd(currentGbp * portfolio.fx)}`;
     } else {
       form.elements.account.innerHTML = latestPensions().map((row) => `<option>${escapeHtml(row.name)}</option>`).join("");
+      if ([...form.elements.account.options].some((option) => option.value === previousAccount)) {
+        form.elements.account.value = previousAccount;
+      }
       const row = latestPensions().find((p) => p.name === form.elements.account.value);
+      currentGbp = Number(row?.value_gbp || 0);
       el("manualCurrent").textContent = money(row?.value_gbp || 0);
     }
+    const entered = Number(form.elements.value.value || 0);
+    const newValueGbp = form.elements.currency.value === "USD" ? entered / portfolio.fx : entered;
+    const difference = entered ? newValueGbp - currentGbp : 0;
+    const differenceTarget = el("manualDifference");
+    differenceTarget.textContent = entered ? moneySigned(difference) : "-";
+    differenceTarget.className = difference > 0 ? "gain-text" : difference < 0 ? "loss-text" : "neutral-text";
   };
   form.elements.kind.addEventListener("change", update);
   form.elements.account.addEventListener("change", update);
+  form.elements.currency.addEventListener("change", update);
+  form.elements.value.addEventListener("input", update);
   form.addEventListener("submit", (event) => submitManual(event, portfolio));
   update();
 }
@@ -1304,6 +1318,7 @@ async function submitManual(event, portfolio) {
     const currentGbp = data.kind === "crypto"
       ? Number(latestManualValueForAccount(data.account)?.value_gbp || 0)
       : Number(latestPensions().find((row) => row.name === data.account)?.value_gbp || 0);
+    const differenceGbp = valueGbp - currentGbp;
     if (currentGbp && Math.abs(valueGbp - currentGbp) / currentGbp > 0.10) {
       const ok = confirm(`Just be aware this manual value changes by more than 10%. Current value is ${money(currentGbp)}. Save anyway?`);
       if (!ok) return;
@@ -1332,7 +1347,7 @@ async function submitManual(event, portfolio) {
         updated_by: state.session.user.id
       }, "manual_update");
     }
-    setSaveMessage("manual", `Manual value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()} UK.`);
+    setSaveMessage("manual", `Manual value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()} UK | Change ${moneySigned(differenceGbp)}.`);
     form.reset();
     await loadCloudLedger();
     renderAll();
