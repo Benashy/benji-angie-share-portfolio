@@ -1656,6 +1656,7 @@ function wireSortableTables() {
       const tbody = table.querySelector("tbody");
       const columnIndex = th.cellIndex;
       const rows = [...tbody.querySelectorAll("tr.holding-main-row, tr:not(.details-row):not(.holding-main-row)")].filter((row) => !row.classList.contains("details-row") && !row.classList.contains("total-row"));
+      const totalRows = [...tbody.querySelectorAll("tr.total-row")];
       const detailRows = new Map([...tbody.querySelectorAll("tr.details-row")].map((row) => [row.dataset.parent, row]));
       const type = th.dataset.sort;
       const direction = th.dataset.direction === "asc" ? "desc" : "asc";
@@ -1674,6 +1675,7 @@ function wireSortableTables() {
         tbody.appendChild(row);
         if (row.dataset.key && detailRows.has(row.dataset.key)) tbody.appendChild(detailRows.get(row.dataset.key));
       });
+      totalRows.forEach((row) => tbody.appendChild(row));
     };
   });
 }
