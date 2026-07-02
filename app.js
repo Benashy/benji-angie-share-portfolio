@@ -697,9 +697,9 @@ function renderDashboard(portfolio) {
   const pensionDetails = pensions.length
     ? `<details><summary>View pension lines</summary><table class="compact"><thead><tr><th>Pension</th><th>Date</th><th>Value</th></tr></thead><tbody>${pensionRows}<tr class="total-row"><td colspan="2">Pension total</td><td>${money(portfolio.pensionTotal)}</td></tr></tbody></table></details>`
     : '<p class="subtle">No pension values loaded.</p>';
-  const accountRows = accountBreakdown(portfolio).map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.invested)}</td><td>${money(item.cash)}</td><td>${money(item.total)}</td></tr>`).join("");
+  const accountRows = accountBreakdown(portfolio).map((item) => `<tr><td data-sort-value="${escapeHtml(item.owner)}">${escapeHtml(item.owner)}</td><td data-sort-value="${escapeHtml(item.account)}">${escapeHtml(item.account)}</td><td data-sort-value="${Number(item.invested || 0)}">${money(item.invested)}</td><td data-sort-value="${Number(item.cash || 0)}">${money(item.cash)}</td><td data-sort-value="${Number(item.total || 0)}">${money(item.total)}</td></tr>`).join("");
   const accountDetails = accountRows
-    ? `<details><summary>View portfolio lines</summary><table class="compact"><thead><tr><th>Owner</th><th>Account</th><th>Invested</th><th>Cash</th><th>Total</th></tr></thead><tbody>${accountRows}<tr class="total-row"><td colspan="4">Portfolio total</td><td>${money(portfolio.accessibleTotal)}</td></tr></tbody></table></details>`
+    ? `<details><summary>View portfolio lines</summary><table class="compact sortable"><thead><tr><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Invested</th><th data-sort="number">Cash</th><th data-sort="number">Total</th></tr></thead><tbody>${accountRows}<tr class="total-row"><td colspan="4">Portfolio total</td><td>${money(portfolio.accessibleTotal)}</td></tr></tbody></table></details>`
     : '<p class="subtle">No portfolio accounts loaded.</p>';
   const topFiveRows = portfolio.combined.slice(0, 5).map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td><td>${pct(portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : 0)}</td></tr>`).join("");
   const cashRows = portfolio.cash.map((item) => `<tr><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.account)}</td><td>${money(item.amount)}</td></tr>`).join("");
@@ -1655,7 +1655,7 @@ function wireSortableTables() {
       const table = th.closest("table");
       const tbody = table.querySelector("tbody");
       const columnIndex = th.cellIndex;
-      const rows = [...tbody.querySelectorAll("tr.holding-main-row, tr:not(.details-row):not(.holding-main-row)")].filter((row) => !row.classList.contains("details-row"));
+      const rows = [...tbody.querySelectorAll("tr.holding-main-row, tr:not(.details-row):not(.holding-main-row)")].filter((row) => !row.classList.contains("details-row") && !row.classList.contains("total-row"));
       const detailRows = new Map([...tbody.querySelectorAll("tr.details-row")].map((row) => [row.dataset.parent, row]));
       const type = th.dataset.sort;
       const direction = th.dataset.direction === "asc" ? "desc" : "asc";
