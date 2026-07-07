@@ -5,7 +5,7 @@ const supabaseClient = await createSupabaseClient();
 const state = {
   session: null,
   member: null,
-  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [] },
+  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [] },
   auditLog: [],
   activeView: "dashboard",
   dirtyCloud: false,
@@ -25,6 +25,7 @@ const state = {
   autoRefreshTimer: null,
   marketAgeTimer: null,
   initialPriceRefreshDone: false,
+  portfolioValueSnapshotsAvailable: false,
   pendingCashConfirm: null,
   lastUndoneTransaction: null
 };
@@ -82,6 +83,12 @@ const usd = (value) => value === null || value === undefined || Number.isNaN(Num
 const pct = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${(Number(value) * 100).toFixed(1)}%`;
 const pctSigned = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(1)}%`;
 const todayIso = () => new Date().toISOString().slice(0, 10);
+const isoDateAtNoon = (value) => new Date(`${String(value || todayIso()).slice(0, 10)}T12:00:00Z`);
+const addDaysIso = (value, days) => {
+  const date = isoDateAtNoon(value);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
 const autoRefreshMinutes = 15;
 const displayDate = (value) => {
   const raw = String(value || "");
@@ -520,7 +527,10 @@ async function loadApp() {
   await loadMember();
   await loadCloudLedger();
   const loadedPortfolio = calculatePortfolio();
-  if (!marketRefreshIsStale(loadedPortfolio)) await ensureMonthlySnapshot(loadedPortfolio);
+  if (!marketRefreshIsStale(loadedPortfolio)) {
+    await ensureMonthlySnapshot(loadedPortfolio);
+    await ensureAccessiblePortfolioSnapshot(loadedPortfolio);
+  }
   setupRealtime();
   setupPresence();
   renderAll();
@@ -536,8 +546,10 @@ async function loadDemoLedger() {
     audit_log: ledger.audit_log || [],
     market_prices: [],
     net_worth_snapshots: [],
+    portfolio_value_snapshots: [],
     fx: 1.3427
   };
+  state.portfolioValueSnapshotsAvailable = false;
 }
 
 function normalizeRow(row) {
@@ -577,19 +589,23 @@ async function loadMember() {
 }
 
 async function loadCloudLedger() {
-  const [tx, manual, pensions, audit, prices, snapshots] = await Promise.all([
+  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots] = await Promise.all([
     supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("audit_log").select("*").order("event_time", { ascending: false }).limit(100),
     supabaseClient.from("market_prices").select("*").order("fetched_at", { ascending: false }),
-    supabaseClient.from("net_worth_snapshots").select("*").order("snapshot_date", { ascending: false })
+    supabaseClient.from("net_worth_snapshots").select("*").order("snapshot_date", { ascending: false }),
+    supabaseClient.from("portfolio_value_snapshots").select("*").order("snapshot_date", { ascending: false })
   ]);
   for (const result of [tx, manual, pensions, audit, prices]) {
     if (result.error) throw result.error;
   }
   const missingSnapshotTable = snapshots.error && ["42P01", "PGRST205"].includes(snapshots.error.code);
+  const missingPortfolioSnapshotTable = portfolioSnapshots.error && ["42P01", "PGRST205", "42501"].includes(portfolioSnapshots.error.code);
   if (snapshots.error && !missingSnapshotTable) throw snapshots.error;
+  if (portfolioSnapshots.error && !missingPortfolioSnapshotTable) throw portfolioSnapshots.error;
+  state.portfolioValueSnapshotsAvailable = !missingPortfolioSnapshotTable;
   state.ledger = {
     transactions: tx.data || [],
     manual_values: manual.data || [],
@@ -597,6 +613,7 @@ async function loadCloudLedger() {
     audit_log: audit.data || [],
     market_prices: prices.data || [],
     net_worth_snapshots: missingSnapshotTable ? [] : snapshots.data || [],
+    portfolio_value_snapshots: missingPortfolioSnapshotTable ? [] : portfolioSnapshots.data || [],
     fx: 1.3427
   };
   state.auditLog = audit.data || [];
@@ -606,7 +623,9 @@ async function loadCloudLedger() {
 
 function setupRealtime() {
   for (const channel of state.subscriptions) supabaseClient.removeChannel(channel);
-  state.subscriptions = ["portfolio_transactions", "manual_values", "pension_values", "market_prices", "net_worth_snapshots"].map((tableName) => {
+  const realtimeTables = ["portfolio_transactions", "manual_values", "pension_values", "market_prices", "net_worth_snapshots"];
+  if (state.portfolioValueSnapshotsAvailable) realtimeTables.push("portfolio_value_snapshots");
+  state.subscriptions = realtimeTables.map((tableName) => {
     const channel = supabaseClient.channel(`changes:${tableName}`).on(
       "postgres_changes",
       { event: "*", schema: "public", table: tableName },
@@ -721,6 +740,16 @@ function renderDashboard(portfolio) {
     const holdingRows = data.holdings.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td></tr>`).join("");
     return `<tr><td colspan="3"><details class="sector-detail"><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th></tr></thead><tbody>${holdingRows}</tbody></table></details></td></tr>`;
   }).join("");
+  const accessibleChangeRows = buildAccessibleChangeRows(portfolio).map((row) => {
+    if (!row.change) {
+      return `<tr><td>${row.label}</td><td colspan="2"><span class="neutral-text">${row.note}</span></td></tr>`;
+    }
+    const tone = row.change.amount > 0 ? "gain-text" : row.change.amount < 0 ? "loss-text" : "neutral-text";
+    return `<tr><td>${row.label}</td><td><span class="${tone}">${moneySigned(row.change.amount)}</span></td><td><span class="${tone}">${pctSigned(row.change.pct)}</span></td></tr>`;
+  }).join("");
+  const accessibleChangeFootnote = state.portfolioValueSnapshotsAvailable
+    ? "Uses daily accessible-portfolio snapshots. One-day change uses the latest saved prior day, so after a weekend it may compare with the previous saved trading day."
+    : "Daily change tracking is ready in the app and will start once the snapshot setup has been run.";
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
   const performanceRows = (items, tone) => items.map((item) => `<tr><td data-sort-value="${escapeHtml(item.ticker)}">${escapeHtml(item.ticker)}</td><td data-sort-value="${escapeHtml(displayHoldingName(item.ticker, item.holding))}">${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td><td data-sort-value="${Number(item.gain_pct || 0)}"><span class="${tone}">${pctSigned(item.gain_pct)}</span></td><td data-sort-value="${Number(item.gain_gbp || 0)}"><span class="${tone}">${moneySigned(item.gain_gbp)}</span></td></tr>`).join("") || '<tr><td colspan="5">None</td></tr>';
@@ -733,6 +762,14 @@ function renderDashboard(portfolio) {
     <section class="grid two hero-metrics">
       <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
       <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
+    </section>
+    <section class="card accessible-change-card">
+      <h2>Accessible Portfolio Change</h2>
+      <table class="compact change-table">
+        <thead><tr><th>Period</th><th>GBP change</th><th>% change</th></tr></thead>
+        <tbody>${accessibleChangeRows}</tbody>
+      </table>
+      <p class="footnote">${accessibleChangeFootnote}</p>
     </section>
     <section class="grid two">
       <div class="card"><h2>Portfolio Highlights</h2>
@@ -812,6 +849,41 @@ function formatHistoryChange(change) {
   return `<span class="${tone}">${moneySigned(change.amount)} / ${pctSigned(change.pct)}</span>`;
 }
 
+function buildAccessibleChangeRows(portfolio) {
+  const snapshots = (state.ledger.portfolio_value_snapshots || [])
+    .map((row) => ({
+      date: String(row.snapshot_date || "").slice(0, 10),
+      accessible_total: Number(row.accessible_total || 0)
+    }))
+    .filter((row) => row.date && Number.isFinite(row.accessible_total) && row.accessible_total > 0)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const periods = [
+    { label: "1 day", days: 1 },
+    { label: "1 week", days: 7 },
+    { label: "1 month", days: 30 },
+    { label: "1 year", days: 365 }
+  ];
+  const currentValue = Number(portfolio.accessibleTotal || 0);
+  return periods.map((period) => {
+    const targetDate = addDaysIso(todayIso(), -period.days);
+    const previous = [...snapshots].reverse().find((row) => row.date <= targetDate);
+    if (!state.portfolioValueSnapshotsAvailable) {
+      return { label: period.label, change: null, note: "Setup required" };
+    }
+    if (!previous) {
+      return { label: period.label, change: null, note: "Collecting data" };
+    }
+    const amount = currentValue - previous.accessible_total;
+    return {
+      label: period.label,
+      change: {
+        amount,
+        pct: previous.accessible_total ? amount / previous.accessible_total : null
+      }
+    };
+  });
+}
+
 async function ensureMonthlySnapshot(portfolio) {
   if (!isConfigured || !state.session) return;
   const monthKey = todayIso().slice(0, 7);
@@ -834,6 +906,30 @@ async function ensureMonthlySnapshot(portfolio) {
     return;
   }
   state.ledger.net_worth_snapshots = [snapshot, ...(state.ledger.net_worth_snapshots || [])];
+}
+
+async function ensureAccessiblePortfolioSnapshot(portfolio) {
+  if (!isConfigured || !state.session || !state.portfolioValueSnapshotsAvailable) return;
+  const snapshotDate = todayIso();
+  if ((state.ledger.portfolio_value_snapshots || []).some((row) => String(row.snapshot_date || "").slice(0, 10) === snapshotDate)) return;
+  const snapshot = {
+    snapshot_date: snapshotDate,
+    accessible_total: portfolio.accessibleTotal,
+    invested_total: portfolio.totalPositions,
+    cash_total: portfolio.totalCash,
+    fx_rate: portfolio.fx,
+    created_by: state.session.user.id,
+    updated_by: state.session.user.id
+  };
+  const { error } = await supabaseClient.from("portfolio_value_snapshots").upsert(snapshot, { onConflict: "snapshot_date" });
+  if (error) {
+    if (["42P01", "PGRST205", "42501"].includes(error.code)) {
+      state.portfolioValueSnapshotsAvailable = false;
+    }
+    console.warn("Accessible portfolio snapshot skipped", error);
+    return;
+  }
+  state.ledger.portfolio_value_snapshots = [snapshot, ...(state.ledger.portfolio_value_snapshots || [])];
 }
 
 function renderHoldings(portfolio) {
@@ -957,7 +1053,9 @@ async function refreshMarketPrices(options = {}) {
     } catch (reloadError) {
       console.warn("Market data refresh completed but reload was delayed", reloadError);
     }
-    ensureMonthlySnapshot(calculatePortfolio()).catch((snapshotError) => console.warn("Net worth snapshot skipped after market refresh", snapshotError));
+    const refreshedPortfolio = calculatePortfolio();
+    ensureMonthlySnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Net worth snapshot skipped after market refresh", snapshotError));
+    ensureAccessiblePortfolioSnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Accessible portfolio snapshot skipped after market refresh", snapshotError));
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
     if (!options.quiet) {
       renderAll();

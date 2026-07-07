@@ -534,6 +534,26 @@ table.compact {
   margin-top: 18px;
 }
 
+.accessible-change-card h2 {
+  margin-bottom: 10px;
+}
+
+.change-table {
+  table-layout: fixed;
+}
+
+.change-table th:first-child,
+.change-table td:first-child {
+  width: 34%;
+}
+
+.change-table th:nth-child(2),
+.change-table th:nth-child(3),
+.change-table td:nth-child(2),
+.change-table td:nth-child(3) {
+  text-align: right;
+}
+
 .gain-text {
   color: var(--green);
   font-weight: 800;

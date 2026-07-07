@@ -108,6 +108,18 @@ create table if not exists net_worth_snapshots (
   updated_by uuid references auth.users(id)
 );
 
+create table if not exists portfolio_value_snapshots (
+  snapshot_date text primary key,
+  accessible_total numeric not null,
+  invested_total numeric not null,
+  cash_total numeric not null,
+  fx_rate numeric,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users(id),
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id)
+);
+
 alter table app_members enable row level security;
 alter table portfolio_transactions enable row level security;
 alter table manual_values enable row level security;
@@ -115,6 +127,7 @@ alter table pension_values enable row level security;
 alter table audit_log enable row level security;
 alter table market_prices enable row level security;
 alter table net_worth_snapshots enable row level security;
+alter table portfolio_value_snapshots enable row level security;
 
 create or replace function public.is_app_member()
 returns boolean
@@ -138,6 +151,8 @@ grant select, insert, update on public.pension_values to authenticated;
 grant select, insert on public.audit_log to authenticated;
 grant select, insert, update on public.market_prices to authenticated;
 grant select, insert, update on public.net_worth_snapshots to authenticated;
+grant select, insert, update on public.portfolio_value_snapshots to authenticated;
+grant select on public.portfolio_value_snapshots to service_role;
 
 create policy "members can read members" on app_members
   for select using (auth.uid() = user_id);
@@ -195,6 +210,16 @@ create policy "members can update net worth snapshots" on net_worth_snapshots
   for update using (public.is_app_member())
   with check (public.is_app_member());
 
+create policy "members can read portfolio value snapshots" on portfolio_value_snapshots
+  for select using (public.is_app_member());
+
+create policy "members can insert portfolio value snapshots" on portfolio_value_snapshots
+  for insert with check (public.is_app_member());
+
+create policy "members can update portfolio value snapshots" on portfolio_value_snapshots
+  for update using (public.is_app_member())
+  with check (public.is_app_member());
+
 -- Enable realtime after tables exist. The checks make this safe to rerun.
 do $$
 begin
@@ -231,5 +256,12 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'net_worth_snapshots'
   ) then
     alter publication supabase_realtime add table net_worth_snapshots;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'portfolio_value_snapshots'
+  ) then
+    alter publication supabase_realtime add table portfolio_value_snapshots;
   end if;
 end $$;
