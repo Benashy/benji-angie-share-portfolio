@@ -748,7 +748,7 @@ function renderDashboard(portfolio) {
     return `<tr><td>${row.label}</td><td><span class="${tone}">${moneySigned(row.change.amount)}</span></td><td><span class="${tone}">${pctSigned(row.change.pct)}</span></td></tr>`;
   }).join("");
   const accessibleChangeFootnote = state.portfolioValueSnapshotsAvailable
-    ? "Uses daily accessible-portfolio snapshots. One-day change uses the latest saved prior day, so after a weekend it may compare with the previous saved trading day."
+    ? "Uses daily portfolio snapshots. One-day change uses the latest saved prior day, so after a weekend it may compare with the previous saved trading day."
     : "Daily change tracking is ready in the app and will start once the snapshot setup has been run.";
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
@@ -760,11 +760,11 @@ function renderDashboard(portfolio) {
 
   el("dashboardView").innerHTML = `
     <section class="grid two hero-metrics">
-      <div class="card"><div class="subtle">Accessible portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
+      <div class="card"><div class="subtle">Portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
       <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
     </section>
     <section class="card accessible-change-card">
-      <h2>Accessible Portfolio Change</h2>
+      <h2>Portfolio Change</h2>
       <table class="compact change-table">
         <thead><tr><th>Period</th><th>GBP change</th><th>% change</th></tr></thead>
         <tbody>${accessibleChangeRows}</tbody>
@@ -796,7 +796,7 @@ function renderDashboard(portfolio) {
     </section>
     <section class="card gain-card"><h2>Top Gainers</h2><div class="table-shell"><table class="sortable performance-table"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table></div><p class="footnote">Performance is measured since purchase.</p></section>
     <section class="card loss-card"><h2>Top Losers</h2><div class="table-shell"><table class="sortable performance-table"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table></div><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></section>
-    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Accessible</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on the first signed-in use of that month.</p></details></section>
+    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Portfolio</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on the first signed-in use of that month.</p></details></section>
   `;
   bindRefreshButtons();
   wireSortableTables();
@@ -926,7 +926,7 @@ async function ensureAccessiblePortfolioSnapshot(portfolio) {
     if (["42P01", "PGRST205", "42501"].includes(error.code)) {
       state.portfolioValueSnapshotsAvailable = false;
     }
-    console.warn("Accessible portfolio snapshot skipped", error);
+    console.warn("Portfolio snapshot skipped", error);
     return;
   }
   state.ledger.portfolio_value_snapshots = [snapshot, ...(state.ledger.portfolio_value_snapshots || [])];
@@ -1055,7 +1055,7 @@ async function refreshMarketPrices(options = {}) {
     }
     const refreshedPortfolio = calculatePortfolio();
     ensureMonthlySnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Net worth snapshot skipped after market refresh", snapshotError));
-    ensureAccessiblePortfolioSnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Accessible portfolio snapshot skipped after market refresh", snapshotError));
+    ensureAccessiblePortfolioSnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Portfolio snapshot skipped after market refresh", snapshotError));
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
     if (!options.quiet) {
       renderAll();
