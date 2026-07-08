@@ -5,7 +5,7 @@ const supabaseClient = await createSupabaseClient();
 const state = {
   session: null,
   member: null,
-  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [] },
+  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [] },
   auditLog: [],
   activeView: "dashboard",
   dirtyCloud: false,
@@ -26,6 +26,7 @@ const state = {
   marketAgeTimer: null,
   initialPriceRefreshDone: false,
   portfolioValueSnapshotsAvailable: false,
+  appStatusAvailable: false,
   pendingCashConfirm: null,
   lastUndoneTransaction: null
 };
@@ -61,6 +62,39 @@ const sectorMap = {
   WXBT: "Crypto",
   Crypto: "Crypto"
 };
+
+const marketDefinitions = [
+  {
+    code: "UK",
+    name: "UK market",
+    exchange: "LSE",
+    timeZone: "Europe/London",
+    open: [8, 0],
+    close: [16, 30],
+    holidays: {
+      2026: ["2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25", "2026-08-31", "2026-12-25", "2026-12-28"],
+      2027: ["2027-01-01", "2027-03-26", "2027-03-29", "2027-05-03", "2027-05-31", "2027-08-30", "2027-12-27", "2027-12-28"]
+    },
+    earlyCloses: {}
+  },
+  {
+    code: "US",
+    name: "US market",
+    exchange: "NYSE/Nasdaq",
+    timeZone: "America/New_York",
+    open: [9, 30],
+    close: [16, 0],
+    holidays: {
+      2026: ["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"],
+      2027: ["2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24"]
+    },
+    earlyCloses: {
+      "2026-11-27": [13, 0],
+      "2026-12-24": [13, 0],
+      "2027-11-26": [13, 0]
+    }
+  }
+];
 
 async function createSupabaseClient() {
   if (!isConfigured) return null;
@@ -115,6 +149,22 @@ const displayDateTime = (value) => {
     hour12: false
   }).replace(",", "");
 };
+const displayShortTime = (value, timeZone = "Europe/London") => {
+  if (!value) return "-";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleTimeString("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false });
+};
+const formatDuration = (ms) => {
+  if (!Number.isFinite(ms) || ms < 0) return "-";
+  const totalMinutes = Math.max(1, Math.round(ms / 60000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+};
 const dateValue = (value) => {
   const raw = String(value || "");
   const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -127,6 +177,94 @@ const dateValue = (value) => {
   const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+function zonedParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+    hour12: false
+  }).formatToParts(date).reduce((acc, part) => {
+    if (part.type !== "literal") acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    weekday: parts.weekday,
+    key: `${parts.year}-${parts.month}-${parts.day}`
+  };
+}
+
+function zonedTimeToUtc(year, month, day, hour, minute, timeZone) {
+  let guess = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  for (let i = 0; i < 3; i += 1) {
+    const parts = zonedParts(guess, timeZone);
+    const currentAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+    const targetAsUtc = Date.UTC(year, month - 1, day, hour, minute);
+    guess = new Date(guess.getTime() - (currentAsUtc - targetAsUtc));
+  }
+  return guess;
+}
+
+function addLocalDays(parts, days) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days, 12, 0));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+}
+
+function localKey(parts) {
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function marketDayInfo(definition, parts) {
+  const key = localKey(parts);
+  const weekday = zonedParts(zonedTimeToUtc(parts.year, parts.month, parts.day, 12, 0, definition.timeZone), definition.timeZone).weekday;
+  const closed = ["Sat", "Sun"].includes(weekday) || (definition.holidays[parts.year] || []).includes(key);
+  const close = definition.earlyCloses[key] || definition.close;
+  return { key, closed, open: definition.open, close };
+}
+
+function findNextMarketEvent(definition, now = new Date()) {
+  const nowParts = zonedParts(now, definition.timeZone);
+  const today = marketDayInfo(definition, nowParts);
+  const openUtc = zonedTimeToUtc(nowParts.year, nowParts.month, nowParts.day, today.open[0], today.open[1], definition.timeZone);
+  const closeUtc = zonedTimeToUtc(nowParts.year, nowParts.month, nowParts.day, today.close[0], today.close[1], definition.timeZone);
+  if (!today.closed && now >= openUtc && now < closeUtc) {
+    return { isOpen: true, label: "Open", eventLabel: "Closes", eventTime: closeUtc, localKey: today.key };
+  }
+  if (!today.closed && now < openUtc) {
+    return { isOpen: false, label: "Closed", eventLabel: "Opens", eventTime: openUtc, localKey: today.key };
+  }
+  for (let offset = 1; offset <= 14; offset += 1) {
+    const local = addLocalDays(nowParts, offset);
+    const info = marketDayInfo(definition, local);
+    if (!info.closed) {
+      const nextOpen = zonedTimeToUtc(local.year, local.month, local.day, info.open[0], info.open[1], definition.timeZone);
+      return { isOpen: false, label: "Closed", eventLabel: "Opens", eventTime: nextOpen, localKey: info.key };
+    }
+  }
+  return { isOpen: false, label: "Closed", eventLabel: "Next open unavailable", eventTime: null, localKey: today.key };
+}
+
+function buildMarketSessionRows(now = new Date()) {
+  return marketDefinitions.map((definition) => {
+    const event = findNextMarketEvent(definition, now);
+    const eventText = event.eventTime
+      ? `${event.eventLabel} ${displayShortTime(event.eventTime, definition.timeZone)} local (${formatDuration(event.eventTime - now)})`
+      : event.eventLabel;
+    return {
+      ...definition,
+      ...event,
+      eventText
+    };
+  });
+}
 const rate = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `$${Number(value).toFixed(4)}`;
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -273,6 +411,29 @@ function marketFreshnessText(portfolio) {
   return `${equityText} · ${fxText}`;
 }
 
+function marketSessionMarkup() {
+  return buildMarketSessionRows().map((row) => `
+    <div class="market-session-item">
+      <div class="market-session-top">
+        <strong>${escapeHtml(row.name)}</strong>
+        <span class="market-state ${row.isOpen ? "open" : "closed"}">${row.label}</span>
+      </div>
+      <div class="subtle">${escapeHtml(row.exchange)} · ${escapeHtml(row.eventText)}</div>
+    </div>
+  `).join("");
+}
+
+function appStatusValue(key) {
+  return (state.ledger.app_status || []).find((row) => row.key === key)?.value || null;
+}
+
+function backupStatusText() {
+  const backup = appStatusValue("dropbox_backup");
+  if (!backup?.timestamp) return "Automatic backup: not recorded yet";
+  const destination = backup.daily_backup ? ` · ${backup.daily_backup.split("/").slice(-2).join("/")}` : "";
+  return `Automatic backup: ${displayDateTime(backup.timestamp)} UK${destination}`;
+}
+
 function updateMarketDataSummary(portfolio) {
   const target = el("marketDataSummary");
   if (target) {
@@ -284,6 +445,9 @@ function updateMarketDataSummary(portfolio) {
 
 function updateLiveMarketAgeLabels(portfolio = calculatePortfolio()) {
   updateMarketDataSummary(portfolio);
+  document.querySelectorAll(".market-session-grid").forEach((node) => {
+    node.innerHTML = marketSessionMarkup();
+  });
   const fxFetchedAt = portfolio.prices.get("GBPUSD=X")?.fetched_at;
   const fxUpdated = refreshAgeText(fxFetchedAt);
   const fxFreshClass = fxUpdated === "more than an hour ago" ? "market-error" : fxUpdated === "not refreshed" ? "" : "market-ok";
@@ -386,12 +550,13 @@ function calculatePortfolio() {
     if (tx.type === "opening" || tx.type === "buy") {
       item.quantity += quantity;
       const cost = tx.cost_basis_gbp ?? ((quantity * Number(tx.price || 0)) / (tx.currency === "USD" ? fx : 1));
+      const cashCost = tx.amount_gbp ?? cost;
       item.cost_basis_gbp += Number(cost || 0);
       if (tx.type === "opening" && tx.opening_value_gbp !== null && tx.opening_value_gbp !== undefined) {
         item.opening_value_gbp += Number(tx.opening_value_gbp || 0);
       }
       if (tx.type === "buy") {
-        cashValue.amount -= Number(cost || 0);
+        cashValue.amount -= Number(cashCost || 0);
         cash.set(key, cashValue);
       }
     } else if (tx.type === "sell") {
@@ -589,23 +754,27 @@ async function loadMember() {
 }
 
 async function loadCloudLedger() {
-  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots] = await Promise.all([
+  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus] = await Promise.all([
     supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("audit_log").select("*").order("event_time", { ascending: false }).limit(100),
     supabaseClient.from("market_prices").select("*").order("fetched_at", { ascending: false }),
     supabaseClient.from("net_worth_snapshots").select("*").order("snapshot_date", { ascending: false }),
-    supabaseClient.from("portfolio_value_snapshots").select("*").order("snapshot_date", { ascending: false })
+    supabaseClient.from("portfolio_value_snapshots").select("*").order("snapshot_date", { ascending: false }),
+    supabaseClient.from("app_status").select("*")
   ]);
   for (const result of [tx, manual, pensions, audit, prices]) {
     if (result.error) throw result.error;
   }
   const missingSnapshotTable = snapshots.error && ["42P01", "PGRST205"].includes(snapshots.error.code);
   const missingPortfolioSnapshotTable = portfolioSnapshots.error && ["42P01", "PGRST205", "42501"].includes(portfolioSnapshots.error.code);
+  const missingAppStatusTable = appStatus.error && ["42P01", "PGRST205", "42501"].includes(appStatus.error.code);
   if (snapshots.error && !missingSnapshotTable) throw snapshots.error;
   if (portfolioSnapshots.error && !missingPortfolioSnapshotTable) throw portfolioSnapshots.error;
+  if (appStatus.error && !missingAppStatusTable) throw appStatus.error;
   state.portfolioValueSnapshotsAvailable = !missingPortfolioSnapshotTable;
+  state.appStatusAvailable = !missingAppStatusTable;
   state.ledger = {
     transactions: tx.data || [],
     manual_values: manual.data || [],
@@ -614,6 +783,7 @@ async function loadCloudLedger() {
     market_prices: prices.data || [],
     net_worth_snapshots: missingSnapshotTable ? [] : snapshots.data || [],
     portfolio_value_snapshots: missingPortfolioSnapshotTable ? [] : portfolioSnapshots.data || [],
+    app_status: missingAppStatusTable ? [] : appStatus.data || [],
     fx: 1.3427
   };
   state.auditLog = audit.data || [];
@@ -625,6 +795,7 @@ function setupRealtime() {
   for (const channel of state.subscriptions) supabaseClient.removeChannel(channel);
   const realtimeTables = ["portfolio_transactions", "manual_values", "pension_values", "market_prices", "net_worth_snapshots"];
   if (state.portfolioValueSnapshotsAvailable) realtimeTables.push("portfolio_value_snapshots");
+  if (state.appStatusAvailable) realtimeTables.push("app_status");
   state.subscriptions = realtimeTables.map((tableName) => {
     const channel = supabaseClient.channel(`changes:${tableName}`).on(
       "postgres_changes",
@@ -757,7 +928,6 @@ function renderDashboard(portfolio) {
   const topHoldingText = top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-";
   const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
   const fxFreshClass = fxUpdated === "more than an hour ago" ? " market-error" : fxUpdated === "not refreshed" ? "" : " market-ok";
-
   el("dashboardView").innerHTML = `
     <section class="grid two hero-metrics">
       <div class="card"><div class="subtle">Portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
@@ -770,6 +940,11 @@ function renderDashboard(portfolio) {
         <tbody>${accessibleChangeRows}</tbody>
       </table>
       <p class="footnote">${accessibleChangeFootnote}</p>
+    </section>
+    <section class="card market-session-card">
+      <h2>Market Status</h2>
+      <div class="market-session-grid">${marketSessionMarkup()}</div>
+      <p class="footnote">Uses regular LSE and NYSE/Nasdaq sessions, weekends, published holidays and known early closes. Unscheduled market closures are not included.</p>
     </section>
     <section class="grid two">
       <div class="card"><h2>Portfolio Highlights</h2>
@@ -1306,7 +1481,7 @@ async function submitEquity(event, portfolio) {
       price: Number(data.price),
       currency: data.currency,
       amount_gbp: amountGbp,
-      cost_basis_gbp: data.type === "buy" ? amountGbp : null,
+      cost_basis_gbp: null,
       notes: data.notes || "",
       fees_gbp: 0,
       is_locked: false,
@@ -1557,6 +1732,7 @@ async function writeAudit(action, tableName, recordId, oldValue, newValue) {
 
 function renderLedger() {
   const editCard = state.editingTransaction ? renderEditTransactionCard(state.editingTransaction) : "";
+  const backupText = backupStatusText();
   const renderTransactionRow = (tx) => {
     const isCash = tx.type === "deposit" || tx.type === "withdrawal";
     const actionButtons = tx.is_locked || !isConfigured
@@ -1612,7 +1788,7 @@ function renderLedger() {
       <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
     </details>
   ` : "";
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><span class="backup-status">${escapeHtml(backupText)}</span></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
@@ -1693,6 +1869,7 @@ async function submitTransactionEdit(event) {
     quantity: nextQuantity,
     price: nextPrice,
     amount_gbp: nextAmount,
+    cost_basis_gbp: null,
     currency: data.currency,
     notes: data.notes || ""
   };
@@ -1714,8 +1891,8 @@ function renderAudit() {
       <tr>
         <td>${displayDateTime(row.event_time || row.created_at || Date.now())}</td>
         <td>${escapeHtml(row.display_name || "")}</td>
-        <td>${escapeHtml(row.action)}</td>
-        <td>${escapeHtml(row.table_name)}</td>
+        <td>${escapeHtml(auditActionLabel(row.action))}</td>
+        <td>${escapeHtml(auditAreaLabel(row.table_name))}</td>
         <td>${escapeHtml(summary)}</td>
       </tr>
       <tr class="details-row audit-detail-row">
@@ -1726,17 +1903,53 @@ function renderAudit() {
   el("auditView").innerHTML = `<section class="card"><h2>Audit Log</h2><table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Area</th><th>Summary</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
+function auditActionLabel(action) {
+  return {
+    add: "Added",
+    edit: "Edited",
+    soft_delete: "Deleted",
+    manual_update: "Manual update",
+    cash_reconcile: "Cash reconciled",
+    broker_average_baseline: "Broker baseline",
+    redo: "Restored",
+    seed: "Imported"
+  }[action] || action || "";
+}
+
+function auditAreaLabel(tableName) {
+  return {
+    portfolio_transactions: "Ledger",
+    manual_values: "Manual values",
+    pension_values: "Pension values",
+    market_prices: "Market prices",
+    net_worth_snapshots: "Net worth history",
+    portfolio_value_snapshots: "Portfolio history",
+    app_status: "App status",
+    portfolio: "Portfolio"
+  }[tableName] || tableName || "";
+}
+
 function auditSummary(row) {
   const next = row.new_value || {};
   const old = row.old_value || {};
+  if (row.action === "broker_average_baseline") {
+    return `${next.owner || ""} ${next.account || ""} ${next.ticker || ""}: ${old.price ?? "-"} ${old.currency || ""} to ${next.price ?? "-"} ${next.currency || ""}`.trim();
+  }
+  if (row.action === "cash_reconcile") {
+    return `${next.owner || ""} ${next.account || ""}: cash adjusted by ${money(next.amount_gbp)}`.trim();
+  }
   if (row.action === "edit") {
     const changed = Object.keys(next).filter((key) => JSON.stringify(next[key]) !== JSON.stringify(old[key]) && !["updated_at", "updated_by", "version"].includes(key));
     return changed.length ? `Changed ${changed.slice(0, 4).join(", ")}${changed.length > 4 ? "..." : ""}` : "Edited";
   }
   if (row.action === "soft_delete") return `Deleted ${next.ticker || ""} ${next.type || ""}`.trim();
-  if (row.table_name === "portfolio_transactions") return `${next.type || row.action} ${next.ticker || ""} ${money(next.amount_gbp)}`.trim();
+  if (row.table_name === "portfolio_transactions") {
+    const quantity = next.quantity ? `${Number(next.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })} ` : "";
+    return `${next.type || row.action} ${quantity}${next.ticker || ""} ${money(next.amount_gbp)}`.trim();
+  }
   if (row.table_name === "manual_values") return `${next.account || "Manual value"} ${money(next.value_gbp)}`;
   if (row.table_name === "pension_values") return `${next.name || "Pension"} ${money(next.value_gbp)}`;
+  if (row.table_name === "app_status") return `${next.key || "Status"} updated`;
   return row.action || "";
 }
 
