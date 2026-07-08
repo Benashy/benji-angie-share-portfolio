@@ -5,6 +5,7 @@ const supabaseClient = await createSupabaseClient();
 const state = {
   session: null,
   member: null,
+  members: [],
   ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [] },
   auditLog: [],
   activeView: "dashboard",
@@ -308,6 +309,11 @@ function statusBadge(value) {
 
 function currentUserName() {
   return state.member?.display_name || "Demo";
+}
+
+function actorName(userId) {
+  if (!userId) return "-";
+  return state.members.find((member) => member.user_id === userId)?.display_name || "-";
 }
 
 function activeRows(rows) {
@@ -751,6 +757,8 @@ async function loadMember() {
   const { data, error } = await supabaseClient.from("app_members").select("*").eq("user_id", userId).single();
   if (error) throw error;
   state.member = data;
+  const members = await supabaseClient.from("app_members").select("*");
+  if (!members.error) state.members = members.data || [data];
 }
 
 async function loadCloudLedger() {
@@ -1744,6 +1752,7 @@ function renderLedger() {
       <tr>
         <td>${displayDate(tx.date)}</td>
         <td>${displayDateTime(tx.updated_at || tx.created_at)}</td>
+        <td>${escapeHtml(actorName(tx.created_by || tx.updated_by))}</td>
         <td>${escapeHtml(tx.type)}</td>
         <td>${escapeHtml(tx.owner)}</td>
         <td>${escapeHtml(tx.account)}</td>
@@ -1757,7 +1766,7 @@ function renderLedger() {
     `;
   };
   const renderValuationRow = (row) => `
-    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${escapeHtml(row.currency)}</td><td>${money(row.amount)}</td><td><span class="subtle">Audit</span></td></tr>
+    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(actorName(row.created_by || row.updated_by))}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${escapeHtml(row.currency)}</td><td>${money(row.amount)}</td><td><span class="subtle">Audit</span></td></tr>
   `;
   const ledgerItems = [
     ...activeRows(state.ledger.transactions).map((row) => ({
@@ -1768,12 +1777,12 @@ function renderLedger() {
     ...activeRows(state.ledger.manual_values).map((row) => ({
       date: row.date,
       created_at: row.updated_at || row.created_at,
-      html: renderValuationRow({ date: row.date, created_at: row.updated_at || row.created_at, type: "manual valuation", owner: row.owner, account: row.account, ticker: row.ticker, quantity: "-", price: "-", amount: row.value_gbp, currency: row.currency_entered || "GBP" })
+      html: renderValuationRow({ date: row.date, created_at: row.updated_at || row.created_at, created_by: row.created_by, updated_by: row.updated_by, type: "manual valuation", owner: row.owner, account: row.account, ticker: row.ticker, quantity: "-", price: "-", amount: row.value_gbp, currency: row.currency_entered || "GBP" })
     })),
     ...activeRows(state.ledger.pensions).map((row) => ({
       date: row.date,
       created_at: row.updated_at || row.created_at,
-      html: renderValuationRow({ date: row.date, created_at: row.updated_at || row.created_at, type: "pension valuation", owner: "Benji", account: row.name, ticker: "PENSION", quantity: "-", price: "-", amount: row.value_gbp, currency: "GBP" })
+      html: renderValuationRow({ date: row.date, created_at: row.updated_at || row.created_at, created_by: row.created_by, updated_by: row.updated_by, type: "pension valuation", owner: "Benji", account: row.name, ticker: "PENSION", quantity: "-", price: "-", amount: row.value_gbp, currency: "GBP" })
     }))
   ].sort((a, b) => {
     const dateDiff = dateValue(b.date) - dateValue(a.date);
@@ -1785,10 +1794,10 @@ function renderLedger() {
   const olderLedger = olderRows ? `
     <details class="ledger-history-detail">
       <summary>Older ledger entries (${ledgerItems.length - 5})</summary>
-      <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
+      <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
     </details>
   ` : "";
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><span class="backup-status">${escapeHtml(backupText)}</span></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><span class="backup-status">${escapeHtml(backupText)}</span></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
