@@ -933,6 +933,11 @@ function renderDashboard(portfolio) {
       <div class="card"><div class="subtle">Portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
       <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
     </section>
+    <section class="card market-session-card">
+      <h2>Market Status</h2>
+      <div class="market-session-grid">${marketSessionMarkup()}</div>
+      <p class="footnote">Uses regular LSE and NYSE/Nasdaq sessions, weekends, published holidays and known early closes. Unscheduled market closures are not included.</p>
+    </section>
     <section class="card accessible-change-card">
       <h2>Portfolio Change</h2>
       <table class="compact change-table">
@@ -940,11 +945,6 @@ function renderDashboard(portfolio) {
         <tbody>${accessibleChangeRows}</tbody>
       </table>
       <p class="footnote">${accessibleChangeFootnote}</p>
-    </section>
-    <section class="card market-session-card">
-      <h2>Market Status</h2>
-      <div class="market-session-grid">${marketSessionMarkup()}</div>
-      <p class="footnote">Uses regular LSE and NYSE/Nasdaq sessions, weekends, published holidays and known early closes. Unscheduled market closures are not included.</p>
     </section>
     <section class="grid two">
       <div class="card"><h2>Portfolio Highlights</h2>
