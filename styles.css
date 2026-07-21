@@ -754,7 +754,8 @@ th[data-sort]::after {
 }
 
 .holdings-table {
-  min-width: 1240px;
+  width: 100%;
+  min-width: 0;
   table-layout: fixed;
 }
 
@@ -763,11 +764,11 @@ th[data-sort]::after {
 }
 
 .holdings-table .col-holding {
-  width: 19%;
+  width: 20%;
 }
 
 .holdings-table .col-owner {
-  width: 9%;
+  width: 8%;
 }
 
 .holdings-table .col-account {
@@ -779,23 +780,19 @@ th[data-sort]::after {
 }
 
 .holdings-table .col-value {
-  width: 9%;
+  width: 10%;
 }
 
 .holdings-table .col-gain {
-  width: 9%;
+  width: 10%;
 }
 
 .holdings-table .col-research {
-  width: 14%;
-}
-
-.holdings-table .col-source {
-  width: 5%;
+  width: 15%;
 }
 
 .holdings-table .col-status {
-  width: 5%;
+  width: 7%;
 }
 
 .owner-toggle {

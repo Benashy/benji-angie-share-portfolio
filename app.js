@@ -1,6 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
+const APP_VERSION = "2026-07-21-research-status-2";
 
 const state = {
   session: null,
@@ -896,7 +897,7 @@ function renderAll() {
   const portfolio = calculatePortfolio();
   el("headlineNetWorth").textContent = money(portfolio.netWorthTotal);
   if (isConfigured && state.session) {
-    el("statusLine").textContent = `Signed in as ${currentUserName()}`;
+    el("statusLine").textContent = `Signed in as ${currentUserName()} · v${APP_VERSION}`;
   }
   renderDashboard(portfolio);
   renderHoldings(portfolio);
@@ -1174,7 +1175,7 @@ function renderHoldings(portfolio) {
     const sourceLine = [research?.source_type, research?.source_title].filter(Boolean).join(" · ");
     const detailRow = `
       <tr class="details-row holding-detail-row hidden" data-parent="${detailKey}">
-        <td colspan="10">
+        <td colspan="9">
           <div class="holding-detail-grid">
             ${item.children.length > 1 ? `
               <div class="owner-breakdown">
@@ -1217,14 +1218,13 @@ function renderHoldings(portfolio) {
         <td data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td>
         <td data-sort-value="${Number(item.gain_pct || 0)}">${pctSigned(item.gain_pct)}</td>
         <td data-sort-value="${escapeHtml(researchMeta.label)}">${researchCell}</td>
-        <td data-sort-value="${escapeHtml(item.source || "-")}">${escapeHtml(item.source || "-")}</td>
         <td>${statusBadge(item.gain_pct)}</td>
       </tr>
       ${detailRow}
     `;
   }).join("");
   const goldilocksRows = researchStatusOptions.map((option) => `<tr><td>${researchStatusBadge({ status: option.value })}</td><td>${escapeHtml(option.meaning)}</td></tr>`).join("");
-  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2>${saveBanner("holdings")}<div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-research"><col class="col-source"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Research Status</th><th data-sort="text">Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Portfolio status is calculated from gain/loss since purchase. Research Status is manually selected using the Alpesh Patel Goldilocks/MACD framework and should be read as research context, not financial advice.</p></section><section class="card"><details class="history-detail"><summary>Goldilocks / MACD Legend</summary><table class="compact detail-table"><thead><tr><th>Status</th><th>Big-picture meaning</th></tr></thead><tbody>${goldilocksRows}</tbody></table><p class="footnote">Bear labels take precedence: Daddy Bear first, then Mummy Bear, then Baby Bear. Alpesh's public material sometimes uses Mommy Bear; this app uses Mummy Bear.</p></details></section>`;
+  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2>${saveBanner("holdings")}<div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-research"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Research Status</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Portfolio status is calculated from gain/loss since purchase. Research Status is manually selected using the Alpesh Patel Goldilocks/MACD framework and should be read as research context, not financial advice.</p></section><section class="card"><details class="history-detail"><summary>Goldilocks / MACD Legend</summary><table class="compact detail-table"><thead><tr><th>Status</th><th>Big-picture meaning</th></tr></thead><tbody>${goldilocksRows}</tbody></table><p class="footnote">Bear labels take precedence: Daddy Bear first, then Mummy Bear, then Baby Bear. Alpesh's public material sometimes uses Mommy Bear; this app uses Mummy Bear.</p></details></section>`;
   wireHoldingDetails();
   wireResearchStatusForms();
   wireSortableTables();
@@ -1358,12 +1358,16 @@ async function refreshMarketPrices(options = {}) {
     ensureMonthlySnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Net worth snapshot skipped after market refresh", snapshotError));
     ensureAccessiblePortfolioSnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Portfolio snapshot skipped after market refresh", snapshotError));
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
-    if (!options.quiet) {
+    if (!options.quiet || options.auto) {
       renderAll();
+    }
+    if (!options.quiet) {
+      setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}${skipped}`, "success", 15000);
+    } else if (options.auto) {
       setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}${skipped}`, "success", 15000);
     }
   } catch (error) {
-    if (!options.quiet) {
+    if (!options.quiet || options.auto) {
       setMarketRefreshMessage(`Market refresh failed: ${error.message} · ${marketFreshnessText(calculatePortfolio())}`, "error");
     }
   } finally {
@@ -1377,7 +1381,7 @@ async function refreshMarketPrices(options = {}) {
 
 function startAutoRefresh(portfolio) {
   if (!isConfigured || !state.session) return;
-  if (!state.initialPriceRefreshDone && marketRefreshIsStale(portfolio)) {
+  if (!state.initialPriceRefreshDone) {
     state.initialPriceRefreshDone = true;
     window.setTimeout(() => refreshMarketPrices({ auto: true, quiet: true }), 1200);
   }
