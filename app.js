@@ -6,7 +6,7 @@ const state = {
   session: null,
   member: null,
   members: [],
-  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [] },
+  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [], research_statuses: [] },
   auditLog: [],
   activeView: "dashboard",
   dirtyCloud: false,
@@ -28,6 +28,7 @@ const state = {
   initialPriceRefreshDone: false,
   portfolioValueSnapshotsAvailable: false,
   appStatusAvailable: false,
+  researchStatusesAvailable: false,
   pendingCashConfirm: null,
   lastUndoneTransaction: null
 };
@@ -270,6 +271,17 @@ const rate = (value) => value === null || value === undefined || !Number.isFinit
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const priceStalenessMinutes = 30;
+const researchStatusOptions = [
+  { value: "positive", label: "Positive", tone: "green", meaning: "Supportive momentum/commentary. Comfortable holding or reviewing for adding, subject to concentration." },
+  { value: "re_entry_watch", label: "Re-entry Watch", tone: "blue", meaning: "Previously weak, now possibly improving. Monitor for confirmation before adding." },
+  { value: "no_signal", label: "No Signal", tone: "neutral", meaning: "No useful current research or MACD view. Do nothing based on research status alone." },
+  { value: "watch", label: "Watch", tone: "amber", meaning: "Important event or mild uncertainty. Pay attention, especially around results, news, or fresh commentary." },
+  { value: "caution", label: "Caution", tone: "amber", meaning: "Weakening signs, but not formally Baby/Mummy/Daddy Bear. Avoid adding without a fresh reason and review size." },
+  { value: "baby_bear", label: "Baby Bear", tone: "amber", meaning: "Short-term pullback. Alpesh's framework suggests usually riding it out, perhaps trimming very large winners." },
+  { value: "mummy_bear", label: "Mummy Bear", tone: "red", meaning: "Moderate downturn. Consider taking profits or rebalancing weaker/speculative big gainers." },
+  { value: "daddy_bear", label: "Daddy Bear", tone: "red", meaning: "Severe/confirmed bear setup. Do not add; review stops/cash and wait for recovery confirmation." }
+];
+const researchStatusMap = Object.fromEntries(researchStatusOptions.map((item) => [item.value, item]));
 const holdingNameMap = {
   AAPL: "Apple",
   AMZN: "Amazon",
@@ -305,6 +317,24 @@ function statusBadge(value) {
   if (value >= 0.10) return '<span class="badge green">Gain</span>';
   if (value < 0) return '<span class="badge red">Loss</span>';
   return '<span class="badge amber">Watch</span>';
+}
+
+function researchStatusFor(ticker) {
+  const rows = activeRows(state.ledger.research_statuses || []).filter((row) => row.ticker === ticker);
+  return rows.sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))[0] || null;
+}
+
+function researchStatusMeta(value) {
+  return researchStatusMap[value] || researchStatusMap.no_signal;
+}
+
+function researchStatusBadge(row) {
+  const meta = researchStatusMeta(row?.status || "no_signal");
+  return `<span class="research-pill ${meta.tone}">${escapeHtml(meta.label)}</span>`;
+}
+
+function researchDate(row) {
+  return row?.selected_date ? displayDate(row.selected_date) : "-";
 }
 
 function currentUserName() {
@@ -718,6 +748,8 @@ async function loadDemoLedger() {
     market_prices: [],
     net_worth_snapshots: [],
     portfolio_value_snapshots: [],
+    app_status: [],
+    research_statuses: [],
     fx: 1.3427
   };
   state.portfolioValueSnapshotsAvailable = false;
@@ -762,7 +794,7 @@ async function loadMember() {
 }
 
 async function loadCloudLedger() {
-  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus] = await Promise.all([
+  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses] = await Promise.all([
     supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
@@ -770,7 +802,8 @@ async function loadCloudLedger() {
     supabaseClient.from("market_prices").select("*").order("fetched_at", { ascending: false }),
     supabaseClient.from("net_worth_snapshots").select("*").order("snapshot_date", { ascending: false }),
     supabaseClient.from("portfolio_value_snapshots").select("*").order("snapshot_date", { ascending: false }),
-    supabaseClient.from("app_status").select("*")
+    supabaseClient.from("app_status").select("*"),
+    supabaseClient.from("research_statuses").select("*").order("updated_at", { ascending: false })
   ]);
   for (const result of [tx, manual, pensions, audit, prices]) {
     if (result.error) throw result.error;
@@ -778,11 +811,14 @@ async function loadCloudLedger() {
   const missingSnapshotTable = snapshots.error && ["42P01", "PGRST205"].includes(snapshots.error.code);
   const missingPortfolioSnapshotTable = portfolioSnapshots.error && ["42P01", "PGRST205", "42501"].includes(portfolioSnapshots.error.code);
   const missingAppStatusTable = appStatus.error && ["42P01", "PGRST205", "42501"].includes(appStatus.error.code);
+  const missingResearchStatusesTable = researchStatuses.error && ["42P01", "PGRST205", "42501"].includes(researchStatuses.error.code);
   if (snapshots.error && !missingSnapshotTable) throw snapshots.error;
   if (portfolioSnapshots.error && !missingPortfolioSnapshotTable) throw portfolioSnapshots.error;
   if (appStatus.error && !missingAppStatusTable) throw appStatus.error;
+  if (researchStatuses.error && !missingResearchStatusesTable) throw researchStatuses.error;
   state.portfolioValueSnapshotsAvailable = !missingPortfolioSnapshotTable;
   state.appStatusAvailable = !missingAppStatusTable;
+  state.researchStatusesAvailable = !missingResearchStatusesTable;
   state.ledger = {
     transactions: tx.data || [],
     manual_values: manual.data || [],
@@ -792,6 +828,7 @@ async function loadCloudLedger() {
     net_worth_snapshots: missingSnapshotTable ? [] : snapshots.data || [],
     portfolio_value_snapshots: missingPortfolioSnapshotTable ? [] : portfolioSnapshots.data || [],
     app_status: missingAppStatusTable ? [] : appStatus.data || [],
+    research_statuses: missingResearchStatusesTable ? [] : researchStatuses.data || [],
     fx: 1.3427
   };
   state.auditLog = audit.data || [];
@@ -804,6 +841,7 @@ function setupRealtime() {
   const realtimeTables = ["portfolio_transactions", "manual_values", "pension_values", "market_prices", "net_worth_snapshots"];
   if (state.portfolioValueSnapshotsAvailable) realtimeTables.push("portfolio_value_snapshots");
   if (state.appStatusAvailable) realtimeTables.push("app_status");
+  if (state.researchStatusesAvailable) realtimeTables.push("research_statuses");
   state.subscriptions = realtimeTables.map((tableName) => {
     const channel = supabaseClient.channel(`changes:${tableName}`).on(
       "postgres_changes",
@@ -1116,7 +1154,10 @@ async function ensureAccessiblePortfolioSnapshot(portfolio) {
 }
 
 function renderHoldings(portfolio) {
+  const statusOptions = researchStatusOptions.map((option) => `<option value="${option.value}">${option.label}</option>`).join("");
   const rows = portfolio.combined.map((item) => {
+    const research = researchStatusFor(item.ticker);
+    const researchMeta = researchStatusMeta(research?.status || "no_signal");
     const childRows = item.children.map((child) => `
       <div class="owner-breakdown-row">
         <span>${escapeHtml(child.owner)}</span>
@@ -1130,17 +1171,42 @@ function renderHoldings(portfolio) {
     const ownerCell = item.children.length > 1
       ? `<button type="button" class="owner-toggle" data-detail="${detailKey}" aria-expanded="false"><span class="toggle-arrow">▸</span> ${escapeHtml(item.owner)}</button>`
       : escapeHtml(item.owner);
-    const detailRow = item.children.length > 1 ? `
+    const sourceLine = [research?.source_type, research?.source_title].filter(Boolean).join(" · ");
+    const detailRow = `
       <tr class="details-row holding-detail-row hidden" data-parent="${detailKey}">
-        <td colspan="9">
-          <div class="owner-breakdown">
-            <div class="owner-breakdown-head"><span>Owner</span><span>Account</span><span>Shares</span><span>Value</span><span>Gain/loss</span></div>
-            ${childRows}
-            <div class="owner-breakdown-row total"><span>${escapeHtml(item.ticker)} total</span><span></span><span>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span><span>${money(item.value_gbp)}</span><span>${pctSigned(item.gain_pct)}</span></div>
+        <td colspan="10">
+          <div class="holding-detail-grid">
+            ${item.children.length > 1 ? `
+              <div class="owner-breakdown">
+                <div class="owner-breakdown-head"><span>Owner</span><span>Account</span><span>Shares</span><span>Value</span><span>Gain/loss</span></div>
+                ${childRows}
+                <div class="owner-breakdown-row total"><span>${escapeHtml(item.ticker)} total</span><span></span><span>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span><span>${money(item.value_gbp)}</span><span>${pctSigned(item.gain_pct)}</span></div>
+              </div>
+            ` : ""}
+            <form class="research-status-form" data-ticker="${escapeHtml(item.ticker)}">
+              <h3>${escapeHtml(item.ticker)} Research Status</h3>
+              <p class="subtle">${escapeHtml(researchMeta.meaning)}</p>
+              <div class="research-form-grid">
+                <label>Status<select name="status">${statusOptions}</select></label>
+                <label>Selected date<input name="selected_date" type="date" value="${escapeHtml(research?.selected_date || todayIso())}"></label>
+                <label>Source type<select name="source_type"><option>Manual</option><option>PDF</option><option>Loom</option><option>Telegram</option><option>Email</option></select></label>
+                <label>Source title<input name="source_title" value="${escapeHtml(research?.source_title || "")}" placeholder="e.g. Weekly Market Update"></label>
+                <label class="wide">Source link<input name="source_url" value="${escapeHtml(research?.source_url || "")}" placeholder="Optional Loom/report link"></label>
+                <label class="wide">Note<textarea name="notes" placeholder="Why this status was selected">${escapeHtml(research?.notes || "")}</textarea></label>
+              </div>
+              <div class="button-row"><button>Save research status</button><span class="subtle">${sourceLine ? `Current source: ${escapeHtml(sourceLine)}` : "Manual until Research Brief imports are added."}</span></div>
+            </form>
           </div>
         </td>
       </tr>
-    ` : "";
+    `;
+    const researchCell = `
+      <button type="button" class="research-status-toggle" data-detail="${detailKey}" aria-expanded="false">
+        <span class="toggle-arrow">▸</span>
+        ${researchStatusBadge(research)}
+        <span class="research-date">${researchDate(research)}</span>
+      </button>
+    `;
     return `
       <tr class="holding-main-row" data-key="${detailKey}">
         <td data-sort-value="${escapeHtml(item.ticker)}"><strong>${escapeHtml(item.ticker)}</strong></td>
@@ -1150,29 +1216,81 @@ function renderHoldings(portfolio) {
         <td data-sort-value="${Number(item.quantity || 0)}">${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
         <td data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td>
         <td data-sort-value="${Number(item.gain_pct || 0)}">${pctSigned(item.gain_pct)}</td>
+        <td data-sort-value="${escapeHtml(researchMeta.label)}">${researchCell}</td>
         <td data-sort-value="${escapeHtml(item.source || "-")}">${escapeHtml(item.source || "-")}</td>
         <td>${statusBadge(item.gain_pct)}</td>
       </tr>
       ${detailRow}
     `;
   }).join("");
-  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2><div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-source"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Watch means the holding is currently up by less than 10% since purchase. Gain is 10% or more; Loss is below purchase cost.</p></section>`;
+  const goldilocksRows = researchStatusOptions.map((option) => `<tr><td>${researchStatusBadge({ status: option.value })}</td><td>${escapeHtml(option.meaning)}</td></tr>`).join("");
+  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2>${saveBanner("holdings")}<div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-research"><col class="col-source"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Research Status</th><th data-sort="text">Source</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Portfolio status is calculated from gain/loss since purchase. Research Status is manually selected using the Alpesh Patel Goldilocks/MACD framework and should be read as research context, not financial advice.</p></section><section class="card"><details class="history-detail"><summary>Goldilocks / MACD Legend</summary><table class="compact detail-table"><thead><tr><th>Status</th><th>Big-picture meaning</th></tr></thead><tbody>${goldilocksRows}</tbody></table><p class="footnote">Bear labels take precedence: Daddy Bear first, then Mummy Bear, then Baby Bear. Alpesh's public material sometimes uses Mommy Bear; this app uses Mummy Bear.</p></details></section>`;
   wireHoldingDetails();
+  wireResearchStatusForms();
   wireSortableTables();
 }
 
 function wireHoldingDetails() {
-  document.querySelectorAll(".owner-toggle").forEach((button) => {
+  document.querySelectorAll(".owner-toggle, .research-status-toggle").forEach((button) => {
     button.addEventListener("click", () => {
       const detail = document.querySelector(`[data-parent="${button.dataset.detail}"]`);
       if (!detail) return;
       const isOpen = !detail.classList.contains("hidden");
       detail.classList.toggle("hidden", isOpen);
       button.setAttribute("aria-expanded", String(!isOpen));
-      const arrow = button.querySelector(".toggle-arrow");
-      if (arrow) arrow.textContent = isOpen ? "▸" : "▾";
+      document.querySelectorAll(`[data-detail="${button.dataset.detail}"] .toggle-arrow`).forEach((arrow) => {
+        arrow.textContent = isOpen ? "▸" : "▾";
+      });
     });
   });
+}
+
+function wireResearchStatusForms() {
+  document.querySelectorAll(".research-status-form").forEach((form) => {
+    const existing = researchStatusFor(form.dataset.ticker);
+    if (existing) {
+      form.elements.status.value = existing.status || "no_signal";
+      form.elements.source_type.value = existing.source_type || "Manual";
+    }
+    form.addEventListener("submit", submitResearchStatus);
+  });
+}
+
+async function submitResearchStatus(event) {
+  event.preventDefault();
+  if (!state.researchStatusesAvailable) {
+    alert("Research Status storage is not available yet. Please refresh after the database update has been applied.");
+    return;
+  }
+  const form = event.currentTarget;
+  const ticker = form.dataset.ticker;
+  const data = Object.fromEntries(new FormData(form).entries());
+  const existing = researchStatusFor(ticker);
+  const patch = {
+    ticker,
+    status: data.status,
+    selected_date: data.selected_date || todayIso(),
+    source_type: data.source_type || "Manual",
+    source_title: data.source_title || "",
+    source_url: data.source_url || "",
+    notes: data.notes || "",
+    updated_by: state.session.user.id
+  };
+  try {
+    setFormWorking(form, true);
+    if (existing) {
+      await updateRowWithVersion("research_statuses", existing, patch, "research_status_update");
+    } else {
+      await insertRow("research_statuses", { ...patch, created_by: state.session.user.id }, "research_status_add");
+    }
+    await loadCloudLedger();
+    setSaveMessage("holdings", `${ticker} research status saved at ${shortUkTime()} UK.`);
+    renderAll();
+  } catch (error) {
+    alert(`Research status save failed: ${error.message}`);
+  } finally {
+    setFormWorking(form, false);
+  }
 }
 
 function bindRefreshButtons() {
@@ -1920,6 +2038,8 @@ function auditActionLabel(action) {
     manual_update: "Manual update",
     cash_reconcile: "Cash reconciled",
     broker_average_baseline: "Broker baseline",
+    research_status_add: "Research status added",
+    research_status_update: "Research status updated",
     redo: "Restored",
     seed: "Imported"
   }[action] || action || "";
@@ -1934,6 +2054,7 @@ function auditAreaLabel(tableName) {
     net_worth_snapshots: "Net worth history",
     portfolio_value_snapshots: "Portfolio history",
     app_status: "App status",
+    research_statuses: "Research status",
     portfolio: "Portfolio"
   }[tableName] || tableName || "";
 }
@@ -1959,6 +2080,7 @@ function auditSummary(row) {
   if (row.table_name === "manual_values") return `${next.account || "Manual value"} ${money(next.value_gbp)}`;
   if (row.table_name === "pension_values") return `${next.name || "Pension"} ${money(next.value_gbp)}`;
   if (row.table_name === "app_status") return `${next.key || "Status"} updated`;
+  if (row.table_name === "research_statuses") return `${next.ticker || "Research"}: ${researchStatusMeta(next.status).label}`;
   return row.action || "";
 }
 

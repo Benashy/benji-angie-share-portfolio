@@ -126,6 +126,24 @@ create table if not exists app_status (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists research_statuses (
+  id uuid primary key default gen_random_uuid(),
+  ticker text not null unique,
+  status text not null check (status in ('positive', 're_entry_watch', 'no_signal', 'watch', 'caution', 'baby_bear', 'mummy_bear', 'daddy_bear')),
+  selected_date text not null,
+  source_type text not null default 'Manual' check (source_type in ('Manual', 'PDF', 'Loom', 'Telegram', 'Email')),
+  source_title text not null default '',
+  source_url text not null default '',
+  notes text not null default '',
+  deleted_at timestamptz,
+  deleted_by uuid references auth.users(id),
+  version integer not null default 1,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users(id),
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id)
+);
+
 alter table app_members enable row level security;
 alter table portfolio_transactions enable row level security;
 alter table manual_values enable row level security;
@@ -135,6 +153,7 @@ alter table market_prices enable row level security;
 alter table net_worth_snapshots enable row level security;
 alter table portfolio_value_snapshots enable row level security;
 alter table app_status enable row level security;
+alter table research_statuses enable row level security;
 
 create or replace function public.is_app_member()
 returns boolean
@@ -162,6 +181,8 @@ grant select, insert, update on public.portfolio_value_snapshots to authenticate
 grant select on public.portfolio_value_snapshots to service_role;
 grant select on public.app_status to authenticated;
 grant select, insert, update on public.app_status to service_role;
+grant select, insert, update on public.research_statuses to authenticated;
+grant select on public.research_statuses to service_role;
 
 create policy "members can read members" on app_members
   for select using (auth.uid() = user_id);
@@ -232,6 +253,16 @@ create policy "members can update portfolio value snapshots" on portfolio_value_
 create policy "members can read app status" on app_status
   for select using (public.is_app_member());
 
+create policy "members can read research statuses" on research_statuses
+  for select using (public.is_app_member());
+
+create policy "members can insert research statuses" on research_statuses
+  for insert with check (public.is_app_member());
+
+create policy "members can update research statuses" on research_statuses
+  for update using (public.is_app_member())
+  with check (public.is_app_member());
+
 -- Enable realtime after tables exist. The checks make this safe to rerun.
 do $$
 begin
@@ -282,5 +313,12 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'app_status'
   ) then
     alter publication supabase_realtime add table app_status;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'research_statuses'
+  ) then
+    alter publication supabase_realtime add table research_statuses;
   end if;
 end $$;
