@@ -754,44 +754,48 @@ th[data-sort]::after {
 }
 
 .holdings-table {
-  min-width: 1040px;
+  min-width: 1240px;
   table-layout: fixed;
 }
 
 .holdings-table .col-ticker {
-  width: 8%;
-}
-
-.holdings-table .col-holding {
-  width: 23%;
-}
-
-.holdings-table .col-owner {
-  width: 10%;
-}
-
-.holdings-table .col-account {
-  width: 17%;
-}
-
-.holdings-table .col-shares {
-  width: 10%;
-}
-
-.holdings-table .col-value {
-  width: 11%;
-}
-
-.holdings-table .col-gain {
-  width: 10%;
-}
-
-.holdings-table .col-source {
   width: 7%;
 }
 
+.holdings-table .col-holding {
+  width: 19%;
+}
+
+.holdings-table .col-owner {
+  width: 9%;
+}
+
+.holdings-table .col-account {
+  width: 14%;
+}
+
+.holdings-table .col-shares {
+  width: 9%;
+}
+
+.holdings-table .col-value {
+  width: 9%;
+}
+
+.holdings-table .col-gain {
+  width: 9%;
+}
+
+.holdings-table .col-research {
+  width: 14%;
+}
+
+.holdings-table .col-source {
+  width: 5%;
+}
+
 .holdings-table .col-status {
-  width: 8%;
+  width: 5%;
 }
 
 .owner-toggle {
@@ -809,6 +813,72 @@ th[data-sort]::after {
 
 .toggle-arrow {
   color: var(--gold);
+}
+
+.research-status-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  font: inherit;
+}
+
+.research-pill {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.research-pill.blue {
+  color: #1d4ed8;
+  background: #eaf1ff;
+}
+
+.research-date {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.holding-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+.research-status-form {
+  padding: 14px;
+  background: #fbf7ef;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.research-status-form h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.research-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.research-form-grid .wide {
+  grid-column: span 2;
+}
+
+.research-form-grid textarea {
+  min-height: 72px;
 }
 
 .owner-breakdown {
@@ -965,6 +1035,14 @@ th {
 
   .market-session-grid {
     grid-template-columns: 1fr;
+  }
+
+  .research-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .research-form-grid .wide {
+    grid-column: span 1;
   }
 
   .highlight-row,
