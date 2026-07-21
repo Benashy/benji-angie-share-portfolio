@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-21-research-status-2";
+const APP_VERSION = "2026-07-21-research-status-3";
 
 const state = {
   session: null,
@@ -1172,7 +1172,6 @@ function renderHoldings(portfolio) {
     const ownerCell = item.children.length > 1
       ? `<button type="button" class="owner-toggle" data-detail="${detailKey}" aria-expanded="false"><span class="toggle-arrow">▸</span> ${escapeHtml(item.owner)}</button>`
       : escapeHtml(item.owner);
-    const sourceLine = [research?.source_type, research?.source_title].filter(Boolean).join(" · ");
     const detailRow = `
       <tr class="details-row holding-detail-row hidden" data-parent="${detailKey}">
         <td colspan="9">
@@ -1184,18 +1183,10 @@ function renderHoldings(portfolio) {
                 <div class="owner-breakdown-row total"><span>${escapeHtml(item.ticker)} total</span><span></span><span>${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span><span>${money(item.value_gbp)}</span><span>${pctSigned(item.gain_pct)}</span></div>
               </div>
             ` : ""}
-            <form class="research-status-form" data-ticker="${escapeHtml(item.ticker)}">
-              <h3>${escapeHtml(item.ticker)} Research Status</h3>
-              <p class="subtle">${escapeHtml(researchMeta.meaning)}</p>
-              <div class="research-form-grid">
-                <label>Status<select name="status">${statusOptions}</select></label>
-                <label>Selected date<input name="selected_date" type="date" value="${escapeHtml(research?.selected_date || todayIso())}"></label>
-                <label>Source type<select name="source_type"><option>Manual</option><option>PDF</option><option>Loom</option><option>Telegram</option><option>Email</option></select></label>
-                <label>Source title<input name="source_title" value="${escapeHtml(research?.source_title || "")}" placeholder="e.g. Weekly Market Update"></label>
-                <label class="wide">Source link<input name="source_url" value="${escapeHtml(research?.source_url || "")}" placeholder="Optional Loom/report link"></label>
-                <label class="wide">Note<textarea name="notes" placeholder="Why this status was selected">${escapeHtml(research?.notes || "")}</textarea></label>
-              </div>
-              <div class="button-row"><button>Save research status</button><span class="subtle">${sourceLine ? `Current source: ${escapeHtml(sourceLine)}` : "Manual until Research Brief imports are added."}</span></div>
+            <form class="research-status-form research-quick-form" data-ticker="${escapeHtml(item.ticker)}">
+              <label>${escapeHtml(item.ticker)} Research Status<select name="status">${statusOptions}</select></label>
+              <button>Save</button>
+              <span class="subtle">${escapeHtml(researchMeta.meaning)}</span>
             </form>
           </div>
         </td>
@@ -1250,7 +1241,6 @@ function wireResearchStatusForms() {
     const existing = researchStatusFor(form.dataset.ticker);
     if (existing) {
       form.elements.status.value = existing.status || "no_signal";
-      form.elements.source_type.value = existing.source_type || "Manual";
     }
     form.addEventListener("submit", submitResearchStatus);
   });
@@ -1266,14 +1256,15 @@ async function submitResearchStatus(event) {
   const ticker = form.dataset.ticker;
   const data = Object.fromEntries(new FormData(form).entries());
   const existing = researchStatusFor(ticker);
+  const selectedDate = existing?.status === data.status ? existing.selected_date || todayIso() : todayIso();
   const patch = {
     ticker,
     status: data.status,
-    selected_date: data.selected_date || todayIso(),
-    source_type: data.source_type || "Manual",
-    source_title: data.source_title || "",
-    source_url: data.source_url || "",
-    notes: data.notes || "",
+    selected_date: selectedDate,
+    source_type: existing?.source_type || "Manual",
+    source_title: existing?.source_title || "",
+    source_url: existing?.source_url || "",
+    notes: existing?.notes || "",
     updated_by: state.session.user.id
   };
   try {

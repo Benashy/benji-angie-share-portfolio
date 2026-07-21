@@ -852,7 +852,7 @@ th[data-sort]::after {
 }
 
 .research-status-form {
-  padding: 14px;
+  padding: 12px;
   background: #fbf7ef;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -876,6 +876,25 @@ th[data-sort]::after {
 
 .research-form-grid textarea {
   min-height: 72px;
+}
+
+.research-quick-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.research-quick-form label {
+  margin: 0;
+}
+
+.research-quick-form button {
+  min-height: 42px;
+}
+
+.research-quick-form .subtle {
+  align-self: center;
 }
 
 .owner-breakdown {
@@ -1035,6 +1054,10 @@ th {
   }
 
   .research-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .research-quick-form {
     grid-template-columns: 1fr;
   }
 
