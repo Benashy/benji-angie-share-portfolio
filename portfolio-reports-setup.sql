@@ -60,7 +60,7 @@ grant select on public.app_members to service_role;
 grant select on public.portfolio_transactions to service_role;
 grant select on public.manual_values to service_role;
 grant select on public.pension_values to service_role;
-grant select on public.market_prices to service_role;
+grant select, insert, update on public.market_prices to service_role;
 grant select on public.net_worth_snapshots to service_role;
 grant select on public.portfolio_value_snapshots to service_role;
 grant select on public.research_statuses to service_role;

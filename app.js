@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-22-telegram-schedule-1";
+const APP_VERSION = "2026-07-22-telegram-report-fix-1";
 
 const state = {
   session: null,
@@ -2054,7 +2054,17 @@ async function invokeReportFunction(action, body = {}) {
   const { data, error } = await supabaseClient.functions.invoke("portfolio-telegram-reports", {
     body: { action, ...body }
   });
-  if (error) throw error;
+  if (error) {
+    if (typeof error.context?.json === "function") {
+      try {
+        const detail = await error.context.json();
+        throw new Error(detail?.error || error.message || "Report action failed");
+      } catch (detailError) {
+        if (detailError?.message && detailError.message !== "Body is unusable") throw detailError;
+      }
+    }
+    throw error;
+  }
   if (data?.ok === false) throw new Error(data.error || "Report action failed");
   return data;
 }
