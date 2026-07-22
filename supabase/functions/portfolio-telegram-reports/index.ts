@@ -46,6 +46,10 @@ const holdingNameMap: Record<string, string> = {
 
 type AnyRow = Record<string, any>;
 
+const REPORT_TIME_ZONE = "Europe/Lisbon";
+const REPORT_LOCAL_HOUR = 14;
+const REPORT_LOCAL_MINUTE = 45;
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -91,11 +95,12 @@ async function requireApprovedUser(req: Request) {
   return { user: data.user, member, admin };
 }
 
-function requireCron(req: Request, body: AnyRow) {
-  const expected = env("PORTFOLIO_REPORT_CRON_SECRET");
+async function requireCron(req: Request, body: AnyRow) {
   const actual = req.headers.get("x-cron-secret") || body.cron_secret || body.secret || "";
-  if (!expected || actual !== expected) throw new Error("Cron not authorised");
-  return { admin: serviceClient() };
+  const admin = serviceClient();
+  const { data, error } = await admin.rpc("portfolio_report_cron_secret_matches", { provided_secret: actual });
+  if (error || data !== true) throw new Error("Cron not authorised");
+  return { admin };
 }
 
 async function telegramApi(method: string, payload: AnyRow) {
@@ -124,6 +129,26 @@ function todayUk() {
 
 function dayNameUk() {
   return new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", weekday: "long" }).format(new Date());
+}
+
+function localReportTimeParts() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: REPORT_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    hour: Number(map.hour),
+    minute: Number(map.minute),
+    label: `${map.hour}:${map.minute} ${REPORT_TIME_ZONE}`,
+  };
+}
+
+function isReportWindow() {
+  const now = localReportTimeParts();
+  return now.hour === REPORT_LOCAL_HOUR && now.minute === REPORT_LOCAL_MINUTE;
 }
 
 function addDaysIso(value: string, days: number) {
@@ -588,9 +613,23 @@ async function handleSendReport(ctx: AnyRow, body: AnyRow) {
 
 async function handleRunSchedule(ctx: AnyRow) {
   const today = todayUk();
+  if (!isReportWindow()) {
+    return { ok: true, status: "outside_report_window", local_time: localReportTimeParts().label };
+  }
   const isMonthly = today.endsWith("-01");
   const isWeekly = dayNameUk() === "Monday";
   const type = isMonthly ? "monthly" : isWeekly ? "weekly" : "daily_snapshot";
+
+  const { data: existingRun, error: existingRunError } = await ctx.admin
+    .from("portfolio_report_runs")
+    .select("id, status, sent_at, created_at")
+    .eq("report_type", type)
+    .eq("period_end", today)
+    .in("status", ["sent", "skipped"])
+    .maybeSingle();
+  if (existingRunError) throw existingRunError;
+  if (existingRun) return { ok: true, status: "already_handled", report_type: type, period_end: today };
+
   const data = await loadPortfolioData(ctx.admin);
   const portfolio = calculatePortfolio(data);
   await saveSnapshot(ctx.admin, portfolio, data, "daily", today);
@@ -618,7 +657,7 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || "probe");
     if (action === "run_schedule") {
-      const ctx = requireCron(req, body);
+      const ctx = await requireCron(req, body);
       return json(await handleRunSchedule(ctx));
     }
     const ctx = await requireApprovedUser(req);

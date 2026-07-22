@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-22-telegram-reports-1";
+const APP_VERSION = "2026-07-22-telegram-schedule-1";
 
 const state = {
   session: null,
@@ -2100,7 +2100,7 @@ function renderReports() {
           <button id="sendWeeklyReport" ${isLinked ? "" : "disabled"}>Send weekly test</button>
           <button id="sendMonthlyReport" class="secondary" ${isLinked ? "" : "disabled"}>Send monthly test</button>
         </div>
-        <p class="footnote">Planned schedule: weekly Monday 09:00 UK; monthly on the 1st at 09:00 UK. Monthly supersedes weekly when both fall on the same day.</p>
+        <p class="footnote">Schedule: weekly Monday 14:45 UK/Lisbon; monthly on the 1st at 14:45 UK/Lisbon. Monthly supersedes weekly when both fall on the same day.</p>
       </div>
     </section>
     <section class="card">
