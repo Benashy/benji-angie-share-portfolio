@@ -897,6 +897,36 @@ th[data-sort]::after {
   align-self: center;
 }
 
+.report-card .highlight-row {
+  grid-template-columns: minmax(120px, .65fr) minmax(0, 1fr);
+}
+
+.pairing-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: #0c0c0c;
+  color: #f2eadc;
+  border: 1px solid rgba(217, 197, 159, .48);
+  border-radius: 8px;
+}
+
+.pairing-code span {
+  color: #d8d0c5;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.pairing-code strong {
+  color: var(--gold);
+  font-size: 22px;
+  letter-spacing: 1px;
+}
+
 .owner-breakdown {
   width: 100%;
   margin-top: 8px;

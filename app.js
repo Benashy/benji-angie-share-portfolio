@@ -1,13 +1,13 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-21-research-status-3";
+const APP_VERSION = "2026-07-22-telegram-reports-1";
 
 const state = {
   session: null,
   member: null,
   members: [],
-  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [], research_statuses: [] },
+  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [], research_statuses: [], portfolio_report_settings: [], portfolio_report_runs: [] },
   auditLog: [],
   activeView: "dashboard",
   dirtyCloud: false,
@@ -30,6 +30,11 @@ const state = {
   portfolioValueSnapshotsAvailable: false,
   appStatusAvailable: false,
   researchStatusesAvailable: false,
+  reportSettingsAvailable: false,
+  reportRunsAvailable: false,
+  telegramPairingCode: "",
+  reportMessage: "",
+  reportMessageTone: "",
   pendingCashConfirm: null,
   lastUndoneTransaction: null
 };
@@ -537,6 +542,12 @@ function saveBanner(area) {
   return `<div class="save-banner ${message.tone === "error" ? "save-error" : message.tone === "warning" ? "save-warning" : ""}" data-save-area="${area}">${escapeHtml(message.text)}</div>`;
 }
 
+function setReportMessage(text, tone = "success") {
+  state.reportMessage = text;
+  state.reportMessageTone = tone;
+  renderReports();
+}
+
 function setFormWorking(form, working, label = "Saving...") {
   const button = form?.querySelector("button:not([type]), button[type='submit']");
   if (!button) return;
@@ -751,6 +762,8 @@ async function loadDemoLedger() {
     portfolio_value_snapshots: [],
     app_status: [],
     research_statuses: [],
+    portfolio_report_settings: [],
+    portfolio_report_runs: [],
     fx: 1.3427
   };
   state.portfolioValueSnapshotsAvailable = false;
@@ -795,7 +808,7 @@ async function loadMember() {
 }
 
 async function loadCloudLedger() {
-  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses] = await Promise.all([
+  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses, reportSettings, reportRuns] = await Promise.all([
     supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
@@ -804,7 +817,9 @@ async function loadCloudLedger() {
     supabaseClient.from("net_worth_snapshots").select("*").order("snapshot_date", { ascending: false }),
     supabaseClient.from("portfolio_value_snapshots").select("*").order("snapshot_date", { ascending: false }),
     supabaseClient.from("app_status").select("*"),
-    supabaseClient.from("research_statuses").select("*").order("updated_at", { ascending: false })
+    supabaseClient.from("research_statuses").select("*").order("updated_at", { ascending: false }),
+    supabaseClient.from("portfolio_report_settings").select("*"),
+    supabaseClient.from("portfolio_report_runs").select("*").order("created_at", { ascending: false }).limit(20)
   ]);
   for (const result of [tx, manual, pensions, audit, prices]) {
     if (result.error) throw result.error;
@@ -813,13 +828,19 @@ async function loadCloudLedger() {
   const missingPortfolioSnapshotTable = portfolioSnapshots.error && ["42P01", "PGRST205", "42501"].includes(portfolioSnapshots.error.code);
   const missingAppStatusTable = appStatus.error && ["42P01", "PGRST205", "42501"].includes(appStatus.error.code);
   const missingResearchStatusesTable = researchStatuses.error && ["42P01", "PGRST205", "42501"].includes(researchStatuses.error.code);
+  const missingReportSettingsTable = reportSettings.error && ["42P01", "PGRST205", "42501"].includes(reportSettings.error.code);
+  const missingReportRunsTable = reportRuns.error && ["42P01", "PGRST205", "42501"].includes(reportRuns.error.code);
   if (snapshots.error && !missingSnapshotTable) throw snapshots.error;
   if (portfolioSnapshots.error && !missingPortfolioSnapshotTable) throw portfolioSnapshots.error;
   if (appStatus.error && !missingAppStatusTable) throw appStatus.error;
   if (researchStatuses.error && !missingResearchStatusesTable) throw researchStatuses.error;
+  if (reportSettings.error && !missingReportSettingsTable) throw reportSettings.error;
+  if (reportRuns.error && !missingReportRunsTable) throw reportRuns.error;
   state.portfolioValueSnapshotsAvailable = !missingPortfolioSnapshotTable;
   state.appStatusAvailable = !missingAppStatusTable;
   state.researchStatusesAvailable = !missingResearchStatusesTable;
+  state.reportSettingsAvailable = !missingReportSettingsTable;
+  state.reportRunsAvailable = !missingReportRunsTable;
   state.ledger = {
     transactions: tx.data || [],
     manual_values: manual.data || [],
@@ -830,6 +851,8 @@ async function loadCloudLedger() {
     portfolio_value_snapshots: missingPortfolioSnapshotTable ? [] : portfolioSnapshots.data || [],
     app_status: missingAppStatusTable ? [] : appStatus.data || [],
     research_statuses: missingResearchStatusesTable ? [] : researchStatuses.data || [],
+    portfolio_report_settings: missingReportSettingsTable ? [] : reportSettings.data || [],
+    portfolio_report_runs: missingReportRunsTable ? [] : reportRuns.data || [],
     fx: 1.3427
   };
   state.auditLog = audit.data || [];
@@ -843,6 +866,8 @@ function setupRealtime() {
   if (state.portfolioValueSnapshotsAvailable) realtimeTables.push("portfolio_value_snapshots");
   if (state.appStatusAvailable) realtimeTables.push("app_status");
   if (state.researchStatusesAvailable) realtimeTables.push("research_statuses");
+  if (state.reportSettingsAvailable) realtimeTables.push("portfolio_report_settings");
+  if (state.reportRunsAvailable) realtimeTables.push("portfolio_report_runs");
   state.subscriptions = realtimeTables.map((tableName) => {
     const channel = supabaseClient.channel(`changes:${tableName}`).on(
       "postgres_changes",
@@ -903,6 +928,7 @@ function renderAll() {
   renderHoldings(portfolio);
   renderTransaction(portfolio);
   renderLedger(portfolio);
+  renderReports();
   renderAudit();
   showView(state.activeView);
   placePresenceInHeader();
@@ -2006,6 +2032,148 @@ async function submitTransactionEdit(event) {
   state.busyForms.ledgerEdit = false;
 }
 
+function reportSettings() {
+  return (state.ledger.portfolio_report_settings || [])[0]?.data || {};
+}
+
+function telegramSettings() {
+  return reportSettings().telegram || {};
+}
+
+function generateTelegramPairingCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "PF-";
+  for (let index = 0; index < 6; index += 1) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  state.telegramPairingCode = code;
+  return code;
+}
+
+async function invokeReportFunction(action, body = {}) {
+  const { data, error } = await supabaseClient.functions.invoke("portfolio-telegram-reports", {
+    body: { action, ...body }
+  });
+  if (error) throw error;
+  if (data?.ok === false) throw new Error(data.error || "Report action failed");
+  return data;
+}
+
+function renderReports() {
+  const telegram = telegramSettings();
+  const isLinked = Boolean(telegram.chat_id);
+  const pairingCode = state.telegramPairingCode || "";
+  const latestRun = (state.ledger.portfolio_report_runs || [])[0];
+  const reportMessage = state.reportMessage
+    ? `<div class="save-banner ${state.reportMessageTone === "error" ? "save-error" : state.reportMessageTone === "warning" ? "save-warning" : ""}">${escapeHtml(state.reportMessage)}</div>`
+    : "";
+  const setupNotice = state.reportSettingsAvailable
+    ? ""
+    : `<p class="notice">Report storage is not active yet. Apply the portfolio reports database update first.</p>`;
+  const linkedText = isLinked
+    ? `Linked to ${escapeHtml(telegram.chat_label || "Telegram")} ${telegram.username ? `(${escapeHtml(telegram.username)})` : ""}`
+    : "Not linked yet";
+  const enabledText = isLinked && telegram.enabled !== false ? "Enabled" : "Not enabled";
+  const recentRuns = (state.ledger.portfolio_report_runs || []).slice(0, 5).map((row) => `
+    <tr><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(row.report_type)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.error || row.message?.slice(0, 80) || "-")}</td></tr>
+  `).join("");
+  el("reportsView").innerHTML = `
+    <section class="grid two">
+      <div class="card report-card">
+        <h2>Telegram Reports</h2>
+        ${setupNotice}
+        ${reportMessage}
+        <div class="highlight-row"><span>Status</span><strong>${linkedText}</strong></div>
+        <div class="highlight-row"><span>Delivery</span><strong>${enabledText}</strong></div>
+        <p class="subtle">Reports are sent from Supabase, so the bot token stays server-side and the MacBook does not need to be on. Pairing will work once the portfolio Telegram bot token has been added as a Supabase secret.</p>
+        <div class="button-row">
+          <button id="generateTelegramCode" class="secondary">Generate pairing code</button>
+          <button id="checkTelegramCode" ${pairingCode ? "" : "disabled"}>Check pairing</button>
+          <button id="sendTelegramTest" class="secondary" ${isLinked ? "" : "disabled"}>Send test</button>
+        </div>
+        ${pairingCode ? `<div class="pairing-code"><span>Send this to the Telegram bot</span><strong>${escapeHtml(pairingCode)}</strong></div>` : ""}
+      </div>
+      <div class="card report-card">
+        <h2>Send Test Report</h2>
+        <p class="subtle">Weekly reports compare against the closest snapshot at least 7 days old. Monthly reports compare against the closest snapshot at least 30 days old. New holdings without a prior snapshot are listed separately and excluded from winners/losers.</p>
+        <div class="button-row">
+          <button id="sendWeeklyReport" ${isLinked ? "" : "disabled"}>Send weekly test</button>
+          <button id="sendMonthlyReport" class="secondary" ${isLinked ? "" : "disabled"}>Send monthly test</button>
+        </div>
+        <p class="footnote">Planned schedule: weekly Monday 09:00 UK; monthly on the 1st at 09:00 UK. Monthly supersedes weekly when both fall on the same day.</p>
+      </div>
+    </section>
+    <section class="card">
+      <details class="history-detail">
+        <summary>Report Activity</summary>
+        <table><thead><tr><th>When</th><th>Type</th><th>Status</th><th>Detail</th></tr></thead><tbody>${recentRuns || `<tr><td colspan="4">No report activity yet.</td></tr>`}</tbody></table>
+        <p class="footnote">${latestRun ? `Latest report activity: ${displayDateTime(latestRun.created_at)}.` : "No report has been sent from this app yet."}</p>
+      </details>
+    </section>
+  `;
+  wireReportButtons();
+}
+
+function wireReportButtons() {
+  el("generateTelegramCode")?.addEventListener("click", () => {
+    generateTelegramPairingCode();
+    setReportMessage("Pairing code generated. Send it to the Telegram bot, then press Check pairing.", "success");
+  });
+  el("checkTelegramCode")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Checking...";
+    try {
+      const result = await invokeReportFunction("resolve_chat", { code: state.telegramPairingCode });
+      if (result.status === "linked") {
+        state.telegramPairingCode = "";
+        await loadCloudLedger();
+        setReportMessage(`Telegram linked to ${result.chat?.label || "your chat"}.`, "success");
+      } else {
+        setReportMessage("No matching Telegram message found yet. Send the code to the bot and try again.", "warning");
+      }
+    } catch (error) {
+      setReportMessage(`Telegram pairing failed: ${error.message}`, "error");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Check pairing";
+    }
+  });
+  el("sendTelegramTest")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Sending...";
+    try {
+      await invokeReportFunction("send_test");
+      await loadCloudLedger();
+      setReportMessage("Telegram test message sent.", "success");
+    } catch (error) {
+      setReportMessage(`Telegram test failed: ${error.message}`, "error");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Send test";
+    }
+  });
+  el("sendWeeklyReport")?.addEventListener("click", () => sendReportTest("weekly"));
+  el("sendMonthlyReport")?.addEventListener("click", () => sendReportTest("monthly"));
+}
+
+async function sendReportTest(reportType) {
+  const button = reportType === "monthly" ? el("sendMonthlyReport") : el("sendWeeklyReport");
+  button.disabled = true;
+  button.textContent = reportType === "monthly" ? "Sending monthly..." : "Sending weekly...";
+  try {
+    await invokeReportFunction("send_report", { report_type: reportType });
+    await loadCloudLedger();
+    setReportMessage(`${reportType === "monthly" ? "Monthly" : "Weekly"} test report sent.`, "success");
+  } catch (error) {
+    setReportMessage(`Report send failed: ${error.message}`, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = reportType === "monthly" ? "Send monthly test" : "Send weekly test";
+  }
+}
+
 function renderAudit() {
   const rows = (state.ledger.audit_log || state.auditLog || []).slice(0, 100).map((row) => {
     const summary = auditSummary(row);
@@ -2090,6 +2258,9 @@ function bindNavigation() {
     if (state.marketMessageTimer) window.clearTimeout(state.marketMessageTimer);
     state.marketRefreshMessage = "";
     state.marketRefreshTone = "";
+    state.telegramPairingCode = "";
+    state.reportMessage = "";
+    state.reportMessageTone = "";
     await loadCloudLedger();
     renderAll();
   });
