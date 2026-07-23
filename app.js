@@ -1,13 +1,13 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-22-telegram-report-fix-1";
+const APP_VERSION = "2026-07-23-transaction-drafts-1";
 
 const state = {
   session: null,
   member: null,
   members: [],
-  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [], research_statuses: [], portfolio_report_settings: [], portfolio_report_runs: [] },
+  ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [], research_statuses: [], holding_name_overrides: [], portfolio_report_settings: [], portfolio_report_runs: [] },
   auditLog: [],
   activeView: "dashboard",
   dirtyCloud: false,
@@ -30,6 +30,7 @@ const state = {
   portfolioValueSnapshotsAvailable: false,
   appStatusAvailable: false,
   researchStatusesAvailable: false,
+  holdingNameOverridesAvailable: false,
   reportSettingsAvailable: false,
   reportRunsAvailable: false,
   telegramPairingCode: "",
@@ -38,6 +39,9 @@ const state = {
   pendingCashConfirm: null,
   lastUndoneTransaction: null
 };
+
+const transactionDraftKey = "benji-angie-portfolio-transaction-drafts";
+const transactionDraftTtlMs = 10 * 60 * 1000;
 
 const displayNames = ["Benji", "Angie"];
 const accountsByOwner = {
@@ -315,7 +319,18 @@ const holdingNameMap = {
 
 function displayHoldingName(ticker, holding) {
   if (ticker === "Crypto") return "Crypto (Revolut)";
+  const override = holdingNameOverrideFor(ticker);
+  if (override?.display_name) return override.display_name;
+  return baseHoldingName(ticker, holding);
+}
+
+function baseHoldingName(ticker, holding) {
   return holding || holdingNameMap[ticker] || ticker;
+}
+
+function holdingNameOverrideFor(ticker) {
+  const key = String(ticker || "").trim().toUpperCase();
+  return activeRows(state.ledger.holding_name_overrides || []).find((row) => String(row.ticker || "").trim().toUpperCase() === key) || null;
 }
 
 function statusBadge(value) {
@@ -542,6 +557,59 @@ function saveBanner(area) {
   return `<div class="save-banner ${message.tone === "error" ? "save-error" : message.tone === "warning" ? "save-warning" : ""}" data-save-area="${area}">${escapeHtml(message.text)}</div>`;
 }
 
+function readTransactionDrafts() {
+  try {
+    const raw = localStorage.getItem(transactionDraftKey);
+    if (!raw) return {};
+    const payload = JSON.parse(raw);
+    if (!payload.updated_at || Date.now() - Number(payload.updated_at) > transactionDraftTtlMs) {
+      localStorage.removeItem(transactionDraftKey);
+      return {};
+    }
+    return payload.forms || {};
+  } catch {
+    localStorage.removeItem(transactionDraftKey);
+    return {};
+  }
+}
+
+function writeTransactionDrafts(forms) {
+  localStorage.setItem(transactionDraftKey, JSON.stringify({ updated_at: Date.now(), forms }));
+}
+
+function saveTransactionDraft(form, key) {
+  const forms = readTransactionDrafts();
+  forms[key] = Object.fromEntries(new FormData(form).entries());
+  writeTransactionDrafts(forms);
+}
+
+function clearTransactionDraft(key) {
+  const forms = readTransactionDrafts();
+  delete forms[key];
+  if (Object.keys(forms).length) writeTransactionDrafts(forms);
+  else localStorage.removeItem(transactionDraftKey);
+}
+
+function restoreTransactionDraft(form, key) {
+  const values = readTransactionDrafts()[key];
+  if (!values) return false;
+  Object.entries(values).forEach(([name, value]) => {
+    const field = form.elements[name];
+    if (field) field.value = value;
+  });
+  form.elements.owner?.dispatchEvent(new Event("change", { bubbles: true }));
+  if (values.account && form.elements.account) form.elements.account.value = values.account;
+  form.dispatchEvent(new Event("input", { bubbles: true }));
+  form.elements.ticker?.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function wireTransactionDraft(form, key) {
+  ["input", "change"].forEach((eventName) => {
+    form.addEventListener(eventName, () => saveTransactionDraft(form, key));
+  });
+}
+
 function setReportMessage(text, tone = "success") {
   state.reportMessage = text;
   state.reportMessageTone = tone;
@@ -762,6 +830,7 @@ async function loadDemoLedger() {
     portfolio_value_snapshots: [],
     app_status: [],
     research_statuses: [],
+    holding_name_overrides: [],
     portfolio_report_settings: [],
     portfolio_report_runs: [],
     fx: 1.3427
@@ -808,7 +877,7 @@ async function loadMember() {
 }
 
 async function loadCloudLedger() {
-  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses, reportSettings, reportRuns] = await Promise.all([
+  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses, holdingNameOverrides, reportSettings, reportRuns] = await Promise.all([
     supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
@@ -818,6 +887,7 @@ async function loadCloudLedger() {
     supabaseClient.from("portfolio_value_snapshots").select("*").order("snapshot_date", { ascending: false }),
     supabaseClient.from("app_status").select("*"),
     supabaseClient.from("research_statuses").select("*").order("updated_at", { ascending: false }),
+    supabaseClient.from("holding_name_overrides").select("*").order("updated_at", { ascending: false }),
     supabaseClient.from("portfolio_report_settings").select("*"),
     supabaseClient.from("portfolio_report_runs").select("*").order("created_at", { ascending: false }).limit(20)
   ]);
@@ -828,17 +898,20 @@ async function loadCloudLedger() {
   const missingPortfolioSnapshotTable = portfolioSnapshots.error && ["42P01", "PGRST205", "42501"].includes(portfolioSnapshots.error.code);
   const missingAppStatusTable = appStatus.error && ["42P01", "PGRST205", "42501"].includes(appStatus.error.code);
   const missingResearchStatusesTable = researchStatuses.error && ["42P01", "PGRST205", "42501"].includes(researchStatuses.error.code);
+  const missingHoldingNameOverridesTable = holdingNameOverrides.error && ["42P01", "PGRST205", "42501"].includes(holdingNameOverrides.error.code);
   const missingReportSettingsTable = reportSettings.error && ["42P01", "PGRST205", "42501"].includes(reportSettings.error.code);
   const missingReportRunsTable = reportRuns.error && ["42P01", "PGRST205", "42501"].includes(reportRuns.error.code);
   if (snapshots.error && !missingSnapshotTable) throw snapshots.error;
   if (portfolioSnapshots.error && !missingPortfolioSnapshotTable) throw portfolioSnapshots.error;
   if (appStatus.error && !missingAppStatusTable) throw appStatus.error;
   if (researchStatuses.error && !missingResearchStatusesTable) throw researchStatuses.error;
+  if (holdingNameOverrides.error && !missingHoldingNameOverridesTable) throw holdingNameOverrides.error;
   if (reportSettings.error && !missingReportSettingsTable) throw reportSettings.error;
   if (reportRuns.error && !missingReportRunsTable) throw reportRuns.error;
   state.portfolioValueSnapshotsAvailable = !missingPortfolioSnapshotTable;
   state.appStatusAvailable = !missingAppStatusTable;
   state.researchStatusesAvailable = !missingResearchStatusesTable;
+  state.holdingNameOverridesAvailable = !missingHoldingNameOverridesTable;
   state.reportSettingsAvailable = !missingReportSettingsTable;
   state.reportRunsAvailable = !missingReportRunsTable;
   state.ledger = {
@@ -851,6 +924,7 @@ async function loadCloudLedger() {
     portfolio_value_snapshots: missingPortfolioSnapshotTable ? [] : portfolioSnapshots.data || [],
     app_status: missingAppStatusTable ? [] : appStatus.data || [],
     research_statuses: missingResearchStatusesTable ? [] : researchStatuses.data || [],
+    holding_name_overrides: missingHoldingNameOverridesTable ? [] : holdingNameOverrides.data || [],
     portfolio_report_settings: missingReportSettingsTable ? [] : reportSettings.data || [],
     portfolio_report_runs: missingReportRunsTable ? [] : reportRuns.data || [],
     fx: 1.3427
@@ -866,6 +940,7 @@ function setupRealtime() {
   if (state.portfolioValueSnapshotsAvailable) realtimeTables.push("portfolio_value_snapshots");
   if (state.appStatusAvailable) realtimeTables.push("app_status");
   if (state.researchStatusesAvailable) realtimeTables.push("research_statuses");
+  if (state.holdingNameOverridesAvailable) realtimeTables.push("holding_name_overrides");
   if (state.reportSettingsAvailable) realtimeTables.push("portfolio_report_settings");
   if (state.reportRunsAvailable) realtimeTables.push("portfolio_report_runs");
   state.subscriptions = realtimeTables.map((tableName) => {
@@ -1185,6 +1260,9 @@ function renderHoldings(portfolio) {
   const rows = portfolio.combined.map((item) => {
     const research = researchStatusFor(item.ticker);
     const researchMeta = researchStatusMeta(research?.status || "no_signal");
+    const holdingOverride = holdingNameOverrideFor(item.ticker);
+    const preferredName = displayHoldingName(item.ticker, item.holding);
+    const originalName = baseHoldingName(item.ticker, item.holding);
     const childRows = item.children.map((child) => `
       <div class="owner-breakdown-row">
         <span>${escapeHtml(child.owner)}</span>
@@ -1213,6 +1291,11 @@ function renderHoldings(portfolio) {
               <label>${escapeHtml(item.ticker)} Research Status<select name="status">${statusOptions}</select></label>
               <button>Save</button>
               <span class="subtle">${escapeHtml(researchMeta.meaning)}</span>
+            </form>
+            <form class="holding-name-form research-quick-form" data-ticker="${escapeHtml(item.ticker)}">
+              <label>${escapeHtml(item.ticker)} Display Name<input name="display_name" value="${escapeHtml(preferredName)}" required></label>
+              <div class="button-row compact-actions"><button>Save name</button>${holdingOverride ? `<button type="button" class="secondary" data-reset-holding-name="${escapeHtml(item.ticker)}">Reset</button>` : ""}</div>
+              <span class="subtle">Original ledger name: ${escapeHtml(originalName)}</span>
             </form>
           </div>
         </td>
@@ -1244,6 +1327,7 @@ function renderHoldings(portfolio) {
   el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2>${saveBanner("holdings")}<div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-research"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Research Status</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Portfolio status is calculated from gain/loss since purchase. Research Status is manually selected using the Alpesh Patel Goldilocks/MACD framework and should be read as research context, not financial advice.</p></section><section class="card"><details class="history-detail"><summary>Goldilocks / MACD Legend</summary><table class="compact detail-table"><thead><tr><th>Status</th><th>Big-picture meaning</th></tr></thead><tbody>${goldilocksRows}</tbody></table><p class="footnote">Bear labels take precedence: Daddy Bear first, then Mummy Bear, then Baby Bear. Alpesh's public material sometimes uses Mommy Bear; this app uses Mummy Bear.</p></details></section>`;
   wireHoldingDetails();
   wireResearchStatusForms();
+  wireHoldingNameForms();
   wireSortableTables();
 }
 
@@ -1308,6 +1392,93 @@ async function submitResearchStatus(event) {
   } finally {
     setFormWorking(form, false);
   }
+}
+
+function wireHoldingNameForms() {
+  document.querySelectorAll(".holding-name-form").forEach((form) => {
+    form.addEventListener("submit", submitHoldingNameOverride);
+  });
+  document.querySelectorAll("[data-reset-holding-name]").forEach((button) => {
+    button.addEventListener("click", () => resetHoldingNameOverride(button.dataset.resetHoldingName));
+  });
+}
+
+async function submitHoldingNameOverride(event) {
+  event.preventDefault();
+  if (!state.holdingNameOverridesAvailable) {
+    alert("Holding name storage is not available yet. Please refresh after the database update has been applied.");
+    return;
+  }
+  const form = event.currentTarget;
+  const ticker = String(form.dataset.ticker || "").trim().toUpperCase();
+  const displayName = String(new FormData(form).get("display_name") || "").trim();
+  if (!ticker || !displayName) return;
+  const existing = (state.ledger.holding_name_overrides || []).find((row) => String(row.ticker || "").trim().toUpperCase() === ticker);
+  const patch = {
+    ticker,
+    display_name: displayName,
+    notes: existing?.notes || "",
+    deleted_at: null,
+    deleted_by: null,
+    updated_by: state.session.user.id,
+    updated_at: new Date().toISOString()
+  };
+  try {
+    setFormWorking(form, true);
+    let saved = null;
+    if (existing) {
+      const { data, error } = await supabaseClient.from("holding_name_overrides")
+        .update({ ...patch, version: Number(existing.version || 1) + 1 })
+        .eq("ticker", existing.ticker)
+        .eq("version", existing.version)
+        .select()
+        .single();
+      if (error || !data) throw new Error(error?.message || "This holding name changed after you opened it. Please refresh and review before saving.");
+      saved = data;
+      await writeAudit("holding_name_update", "holding_name_overrides", null, existing, saved);
+    } else {
+      const { data, error } = await supabaseClient.from("holding_name_overrides")
+        .insert({ ...patch, created_by: state.session.user.id })
+        .select()
+        .single();
+      if (error) throw error;
+      saved = data;
+      await writeAudit("holding_name_add", "holding_name_overrides", null, null, saved);
+    }
+    await loadCloudLedger();
+    setSaveMessage("holdings", `${ticker} display name saved at ${shortUkTime()} UK.`);
+    renderAll();
+  } catch (error) {
+    alert(`Holding name save failed: ${error.message}`);
+  } finally {
+    setFormWorking(form, false);
+  }
+}
+
+async function resetHoldingNameOverride(tickerValue) {
+  const ticker = String(tickerValue || "").trim().toUpperCase();
+  const existing = holdingNameOverrideFor(ticker);
+  if (!existing) return;
+  const patch = {
+    deleted_at: new Date().toISOString(),
+    deleted_by: state.session.user.id,
+    version: Number(existing.version || 1) + 1,
+    updated_by: state.session.user.id,
+    updated_at: new Date().toISOString()
+  };
+  const { data, error } = await supabaseClient.from("holding_name_overrides")
+    .update(patch)
+    .eq("ticker", existing.ticker)
+    .select()
+    .single();
+  if (error || !data) {
+    alert(`Holding name reset failed: ${error?.message || "No row was updated."}`);
+    return;
+  }
+  await writeAudit("holding_name_reset", "holding_name_overrides", null, existing, data);
+  await loadCloudLedger();
+  setSaveMessage("holdings", `${ticker} display name reset at ${shortUkTime()} UK.`);
+  renderAll();
 }
 
 function bindRefreshButtons() {
@@ -1490,10 +1661,13 @@ function wireAccountFilter(form) {
   const owner = form.elements.owner;
   const account = form.elements.account;
   const update = () => {
+    const selected = account.value;
     account.innerHTML = (accountsByOwner[owner.value] || []).map((name) => `<option>${escapeHtml(name)}</option>`).join("");
+    if ([...account.options].some((option) => option.value === selected)) account.value = selected;
   };
   owner.addEventListener("change", update);
   update();
+  return update;
 }
 
 function wireTransactionForms(portfolio) {
@@ -1506,9 +1680,15 @@ function wireTransactionForms(portfolio) {
   wireTickerLookup(equityForm, portfolio);
   wireTransactionPreview(equityForm, portfolio);
   wireTransactionPreview(cashForm, portfolio);
+  restoreTransactionDraft(equityForm, "equity");
+  restoreTransactionDraft(cashForm, "cash");
+  wireTransactionDraft(equityForm, "equity");
+  wireTransactionDraft(cashForm, "cash");
   equityForm.addEventListener("submit", (event) => submitEquity(event, portfolio));
   cashForm.addEventListener("submit", (event) => submitCash(event, portfolio));
   setupManualForm(manualForm, portfolio);
+  restoreTransactionDraft(manualForm, "manual");
+  wireTransactionDraft(manualForm, "manual");
   const cashConfirmForm = el("cashConfirmForm");
   if (cashConfirmForm) cashConfirmForm.addEventListener("submit", (event) => submitCashConfirmation(event, portfolio));
   el("cashConfirmDisregard")?.addEventListener("click", () => {
@@ -1639,6 +1819,7 @@ async function submitEquity(event, portfolio) {
     setSaveMessage("equity", `${data.type === "buy" ? "Buy" : "Sell"} saved: ${row.ticker} ${money(amountGbp)} at ${shortUkTime()} UK.`);
     state.pendingCashConfirm = { owner: data.owner, account: data.account };
     form.reset();
+    clearTransactionDraft("equity");
     await loadCloudLedger();
     renderAll();
   } catch (error) {
@@ -1714,6 +1895,7 @@ async function submitCash(event, portfolio) {
     await insertRow("portfolio_transactions", row, "add");
     setSaveMessage("cash", `${data.type === "deposit" ? "Cash deposit" : "Cash withdrawal"} saved: ${money(amountGbp)} to ${data.account} at ${shortUkTime()} UK.`);
     form.reset();
+    clearTransactionDraft("cash");
     await loadCloudLedger();
     renderAll();
   } catch (error) {
@@ -1769,6 +1951,7 @@ async function submitManual(event, portfolio) {
     }
     setSaveMessage("manual", `Manual value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()} UK | Change ${moneySigned(differenceGbp)}.`);
     form.reset();
+    clearTransactionDraft("manual");
     await loadCloudLedger();
     renderAll();
   } catch (error) {
@@ -2213,6 +2396,9 @@ function auditActionLabel(action) {
     broker_average_baseline: "Broker baseline",
     research_status_add: "Research status added",
     research_status_update: "Research status updated",
+    holding_name_add: "Holding name added",
+    holding_name_update: "Holding name updated",
+    holding_name_reset: "Holding name reset",
     redo: "Restored",
     seed: "Imported"
   }[action] || action || "";
@@ -2228,6 +2414,7 @@ function auditAreaLabel(tableName) {
     portfolio_value_snapshots: "Portfolio history",
     app_status: "App status",
     research_statuses: "Research status",
+    holding_name_overrides: "Holding names",
     portfolio: "Portfolio"
   }[tableName] || tableName || "";
 }
@@ -2254,6 +2441,7 @@ function auditSummary(row) {
   if (row.table_name === "pension_values") return `${next.name || "Pension"} ${money(next.value_gbp)}`;
   if (row.table_name === "app_status") return `${next.key || "Status"} updated`;
   if (row.table_name === "research_statuses") return `${next.ticker || "Research"}: ${researchStatusMeta(next.status).label}`;
+  if (row.table_name === "holding_name_overrides") return `${next.ticker || "Holding"}: ${next.display_name || "name reset"}`;
   return row.action || "";
 }
 

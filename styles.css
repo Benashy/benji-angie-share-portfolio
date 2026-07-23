@@ -897,6 +897,15 @@ th[data-sort]::after {
   align-self: center;
 }
 
+.holding-name-form {
+  background: #f7f1e6;
+}
+
+.compact-actions {
+  gap: 8px;
+  margin: 0;
+}
+
 .report-card .highlight-row {
   grid-template-columns: minmax(120px, .65fr) minmax(0, 1fr);
 }
