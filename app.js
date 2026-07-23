@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-23-transaction-drafts-3";
+const APP_VERSION = "2026-07-23-benji-isa-reconcile-1";
 
 const state = {
   session: null,
@@ -46,7 +46,7 @@ const transactionDraftTtlMs = 10 * 60 * 1000;
 const displayNames = ["Benji", "Angie"];
 const accountsByOwner = {
   Angie: ["Angie ISA - 2259859", "Angie Trading - 5671056"],
-  Benji: ["Benji ISA - 2222586", "Benji ISA - 2222587", "Benji HL Fund & Share - 2156983", "Benji - Revolut - Crypto"]
+  Benji: ["Benji ISA - 2222586", "Benji HL Fund & Share - 2156983", "Benji - Revolut - Crypto"]
 };
 
 const sectorMap = {
