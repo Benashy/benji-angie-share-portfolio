@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-23-transaction-drafts-2";
+const APP_VERSION = "2026-07-23-transaction-drafts-3";
 
 const state = {
   session: null,
