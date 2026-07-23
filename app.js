@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-23-transaction-drafts-1";
+const APP_VERSION = "2026-07-23-transaction-drafts-2";
 
 const state = {
   session: null,
@@ -599,8 +599,11 @@ function restoreTransactionDraft(form, key) {
   });
   form.elements.owner?.dispatchEvent(new Event("change", { bubbles: true }));
   if (values.account && form.elements.account) form.elements.account.value = values.account;
+  [...form.querySelectorAll("input, select, textarea")].forEach((field) => {
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   form.dispatchEvent(new Event("input", { bubbles: true }));
-  form.elements.ticker?.dispatchEvent(new Event("change", { bubbles: true }));
   return true;
 }
 
