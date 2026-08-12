@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-07-23-benji-isa-reconcile-1";
+const APP_VERSION = "2026-08-12-telegram-benchmark-1";
 
 const state = {
   session: null,

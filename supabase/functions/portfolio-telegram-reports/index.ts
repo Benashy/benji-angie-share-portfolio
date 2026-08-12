@@ -185,6 +185,11 @@ function pctSigned(value: number | null | undefined) {
   return `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(1)}%`;
 }
 
+function percentagePointsSigned(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "-";
+  return `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(1)} percentage points`;
+}
+
 function activeRows(rows: AnyRow[]) {
   return (rows || []).filter((row) => !row.deleted_at);
 }
@@ -389,7 +394,7 @@ async function fetchYahooQuote(ticker: string) {
 async function refreshMarketPrices(admin: any) {
   const { data: transactions, error } = await admin.from("portfolio_transactions").select("ticker").is("deleted_at", null);
   if (error) throw error;
-  const tickers = new Set<string>(["GBPUSD=X"]);
+  const tickers = new Set<string>(["GBPUSD=X", "^GSPC"]);
   for (const row of transactions || []) {
     const ticker = String(row.ticker || "").trim();
     if (ticker && ticker !== "CASH" && ticker !== "Crypto") tickers.add(ticker);
@@ -425,6 +430,7 @@ function researchStatusMap(rows: AnyRow[]) {
 
 async function saveSnapshot(admin: any, portfolio: AnyRow, data: Record<string, AnyRow[]>, kind: string, date: string) {
   const snapshotKey = `${kind}-${date}`;
+  const sp500 = priceMap(data.market_prices || []).get("^GSPC");
   const snapshot = {
     snapshot_key: snapshotKey,
     snapshot_date: date,
@@ -435,7 +441,11 @@ async function saveSnapshot(admin: any, portfolio: AnyRow, data: Record<string, 
     pension_total: portfolio.pensionTotal,
     net_worth_total: portfolio.netWorthTotal,
     fx_rate: portfolio.fx,
-    summary: { holding_count: portfolio.combined.length },
+    summary: {
+      holding_count: portfolio.combined.length,
+      sp500_level: Number(sp500?.price || 0) || null,
+      sp500_market_time: sp500?.market_time || null,
+    },
   };
   const { error } = await admin.from("portfolio_report_snapshots").upsert(snapshot, { onConflict: "snapshot_key" });
   if (error) throw error;
@@ -479,29 +489,143 @@ async function loadHoldingSnapshots(admin: any, snapshotKey: string | null) {
   return new Map((data || []).map((row: AnyRow) => [row.ticker, row]));
 }
 
-function holdingChangeRows(current: AnyRow[], prior: Map<string, AnyRow>) {
+function flowTime(row: AnyRow, fallback: string) {
+  const parsed = Date.parse(String(row.created_at || ""));
+  return Number.isFinite(parsed) ? parsed : Date.parse(fallback);
+}
+
+function transactionAmountGbp(row: AnyRow, fx: number) {
+  const direct = Number(row.amount_gbp);
+  if (Number.isFinite(direct) && direct !== 0) return Math.abs(direct);
+  const basis = Number(row.cost_basis_gbp);
+  if (Number.isFinite(basis) && basis !== 0) return Math.abs(basis);
+  const local = Number(row.quantity || 0) * Number(row.price || 0);
+  return Math.abs(row.currency === "USD" ? local / Math.max(fx, 0.0001) : local);
+}
+
+function modifiedDietz(beginningValue: number, endingValue: number, flows: AnyRow[], startAt: string, endAt: string) {
+  const start = Date.parse(startAt);
+  const end = Date.parse(endAt);
+  const duration = Math.max(1, end - start);
+  const netFlow = flows.reduce((sum, flow) => sum + Number(flow.amount || 0), 0);
+  const weightedFlows = flows.reduce((sum, flow) => {
+    const occurred = Math.min(end, Math.max(start, Number(flow.occurred_at || start)));
+    const weight = (end - occurred) / duration;
+    return sum + (Number(flow.amount || 0) * weight);
+  }, 0);
+  const gainGbp = endingValue - beginningValue - netFlow;
+  const denominator = beginningValue + weightedFlows;
+  return {
+    gain_gbp: gainGbp,
+    gain_pct: denominator > 0 ? gainGbp / denominator : null,
+    net_flow: netFlow,
+  };
+}
+
+async function loadPeriodTransactions(admin: any, startAt: string, endAt: string) {
+  const { data, error } = await admin
+    .from("portfolio_transactions")
+    .select("date,type,ticker,quantity,price,currency,amount_gbp,cost_basis_gbp,created_at")
+    .is("deleted_at", null)
+    .gt("created_at", startAt)
+    .lte("created_at", endAt)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+function portfolioCashFlows(rows: AnyRow[], fx: number, fallbackTime: string) {
+  return rows.flatMap((row) => {
+    if (row.type !== "deposit" && row.type !== "withdrawal") return [];
+    const amount = transactionAmountGbp(row, fx) * (row.type === "deposit" ? 1 : -1);
+    return [{ amount, occurred_at: flowTime(row, fallbackTime) }];
+  });
+}
+
+function holdingCashFlows(rows: AnyRow[], ticker: string, fx: number, fallbackTime: string) {
+  return rows.flatMap((row) => {
+    if (row.ticker !== ticker || (row.type !== "buy" && row.type !== "sell")) return [];
+    const amount = transactionAmountGbp(row, fx) * (row.type === "buy" ? 1 : -1);
+    return [{ amount, occurred_at: flowTime(row, fallbackTime) }];
+  });
+}
+
+function holdingChangeRows(
+  current: AnyRow[],
+  prior: Map<string, AnyRow>,
+  periodTransactions: AnyRow[],
+  fx: number,
+  startAt: string,
+  endAt: string,
+) {
   return current.map((item) => {
     const old = prior.get(item.ticker);
     const oldQuantity = Number(old?.quantity || 0);
     const currentQuantity = Number(item.quantity || 0);
-    const oldUnitValue = oldQuantity ? Number(old?.value_gbp || 0) / oldQuantity : 0;
-    const currentUnitValue = currentQuantity ? Number(item.value_gbp || 0) / currentQuantity : 0;
-    if (!old || oldQuantity <= 0 || currentQuantity <= 0 || oldUnitValue <= 0 || currentUnitValue <= 0) {
+    const oldValue = Number(old?.value_gbp || 0);
+    const currentValue = Number(item.value_gbp || 0);
+    if (!old || oldQuantity <= 0 || currentQuantity <= 0 || oldValue <= 0 || currentValue <= 0) {
       return { ...item, comparable: false, change_gbp: null, change_pct: null };
     }
 
-    // Compare the shares held across both snapshots so purchases and sales are not
-    // mistaken for market gains or losses. GBP values retain the effect of FX moves.
-    const comparableQuantity = Math.min(oldQuantity, currentQuantity);
-    const changeGbp = (currentUnitValue - oldUnitValue) * comparableQuantity;
+    const performance = modifiedDietz(
+      oldValue,
+      currentValue,
+      holdingCashFlows(periodTransactions, item.ticker, fx, endAt),
+      startAt,
+      endAt,
+    );
     return {
       ...item,
       comparable: true,
-      change_gbp: changeGbp,
-      change_pct: (currentUnitValue - oldUnitValue) / oldUnitValue,
+      change_gbp: performance.gain_gbp,
+      change_pct: performance.gain_pct,
       quantity_changed: oldQuantity !== currentQuantity,
     };
   });
+}
+
+async function fetchYahooHistoricalPoint(symbol: string, targetAt: string) {
+  const target = Date.parse(targetAt);
+  if (!Number.isFinite(target)) throw new Error("Invalid benchmark timestamp");
+  const recentEnoughForIntraday = Date.now() - target < 59 * 86_400_000;
+  const interval = recentEnoughForIntraday ? "5m" : "1d";
+  const padding = recentEnoughForIntraday ? 4 : 8;
+  const period1 = Math.floor((target - padding * 86_400_000) / 1000);
+  const period2 = Math.floor((target + 86_400_000) / 1000);
+  let lastError = "Yahoo benchmark lookup failed";
+
+  for (const host of ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]) {
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
+    try {
+      const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 portfolio-report-benchmark" } });
+      if (!response.ok) {
+        lastError = `Yahoo returned ${response.status}`;
+        continue;
+      }
+      const payload = await response.json();
+      const result = payload?.chart?.result?.[0];
+      const timestamps = result?.timestamp || [];
+      const closes = result?.indicators?.quote?.[0]?.close || [];
+      const points = timestamps
+        .map((timestamp: number, index: number) => ({ timestamp, value: Number(closes[index]) }))
+        .filter((point: AnyRow) => Number.isFinite(point.value) && point.timestamp * 1000 <= target)
+        .sort((a: AnyRow, b: AnyRow) => b.timestamp - a.timestamp);
+      if (points.length) return { level: points[0].value, market_time: new Date(points[0].timestamp * 1000).toISOString() };
+      lastError = "Yahoo returned no benchmark point before the report";
+    } catch (error) {
+      lastError = error?.message || String(error);
+    }
+  }
+  throw new Error(lastError);
+}
+
+async function snapshotBenchmark(snapshot: AnyRow) {
+  const storedLevel = Number(snapshot?.summary?.sp500_level || 0);
+  if (storedLevel > 0) {
+    return { level: storedLevel, market_time: snapshot.summary?.sp500_market_time || snapshot.created_at };
+  }
+  return fetchYahooHistoricalPoint("^GSPC", snapshot.created_at || `${snapshot.snapshot_date}T14:45:00Z`);
 }
 
 function formatHoldingLine(item: AnyRow, includeChange = true) {
@@ -518,12 +642,14 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
   const data = await loadPortfolioData(admin);
   const portfolio = calculatePortfolio(data);
   const snapshot = await saveSnapshot(admin, portfolio, data, kind, date);
+  const currentAt = new Date().toISOString();
   const prior = await findPriorSnapshot(admin, reportType, date);
   const priorHoldings = await loadHoldingSnapshots(admin, prior?.snapshot_key || null);
+  const periodTransactions = prior ? await loadPeriodTransactions(admin, prior.created_at, currentAt) : [];
   const changedHoldings = holdingChangeRows(portfolio.combined.map((item: AnyRow) => ({
     ...item,
     weight: portfolio.accessibleTotal ? item.value_gbp / portfolio.accessibleTotal : null,
-  })), priorHoldings);
+  })), priorHoldings, periodTransactions, portfolio.fx, prior?.created_at || currentAt, currentAt);
   const comparable = changedHoldings.filter((item) => item.comparable);
   const gainers = comparable.filter((item) => Number(item.change_gbp) > 0).sort((a, b) => Number(b.change_gbp) - Number(a.change_gbp)).slice(0, 3);
   const losers = comparable.filter((item) => Number(item.change_gbp) < 0).sort((a, b) => Number(a.change_gbp) - Number(b.change_gbp)).slice(0, 3);
@@ -532,9 +658,45 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
   const totalChange = prior ? Number(portfolio.accessibleTotal || 0) - Number(prior.accessible_total || 0) : null;
   const pensionChange = prior ? Number(portfolio.pensionTotal || 0) - Number(prior.pension_total || 0) : null;
   const headlineChange = prior ? Number(portfolio.netWorthTotal || 0) - Number(prior.net_worth_total || 0) : null;
+  const externalFlows = prior ? portfolioCashFlows(periodTransactions, portfolio.fx, currentAt) : [];
+  const portfolioPerformance = prior
+    ? modifiedDietz(Number(prior.accessible_total || 0), Number(portfolio.accessibleTotal || 0), externalFlows, prior.created_at, currentAt)
+    : null;
   const elapsedDays = prior ? daysBetweenIso(prior.snapshot_date, date) : (reportType === "monthly" ? 30 : 7);
   const comparisonLabel = `${elapsedDays} day${elapsedDays === 1 ? "" : "s"}`;
   const priorDateLabel = prior ? reportDate(prior.snapshot_date) : "";
+  let benchmark: AnyRow | null = null;
+  if (prior) {
+    try {
+      const [priorBenchmark, currentBenchmark] = await Promise.all([
+        snapshotBenchmark(prior),
+        snapshotBenchmark({ ...snapshot, created_at: currentAt }),
+      ]);
+      const usdChange = currentBenchmark.level / priorBenchmark.level - 1;
+      const priorFx = Number(prior.fx_rate || 0);
+      const currentFx = Number(portfolio.fx || 0);
+      const gbpChange = priorFx > 0 && currentFx > 0
+        ? (currentBenchmark.level / currentFx) / (priorBenchmark.level / priorFx) - 1
+        : null;
+      const priorMarketDate = String(priorBenchmark.market_time || "").slice(0, 10);
+      const currentMarketDate = String(currentBenchmark.market_time || "").slice(0, 10);
+      benchmark = {
+        usd_change: usdChange,
+        gbp_change: gbpChange,
+        relative_gbp: portfolioPerformance?.gain_pct !== null && gbpChange !== null
+          ? Number(portfolioPerformance?.gain_pct) - gbpChange
+          : null,
+        prior_market_time: priorBenchmark.market_time,
+        current_market_time: currentBenchmark.market_time,
+        date_note: priorMarketDate && currentMarketDate
+          && (priorMarketDate !== prior.snapshot_date || currentMarketDate !== snapshot.snapshot_date)
+          ? `S&P data points: ${reportDate(priorMarketDate)} to ${reportDate(currentMarketDate)} (latest available)`
+          : "",
+      };
+    } catch (error) {
+      console.error("S&P 500 benchmark unavailable", error);
+    }
+  }
   const title = type.startsWith("test_")
     ? `Test ${reportType} portfolio report`
     : `${reportType === "monthly" ? "Monthly" : "Weekly"} portfolio report`;
@@ -542,10 +704,26 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
     `Benji & Angie's Investment Portfolio`,
     title,
     "",
-    `Portfolio: ${money(portfolio.accessibleTotal)}${prior ? ` (${comparisonLabel}: ${moneySigned(totalChange)} / ${pctSigned(totalChange! / Number(prior.accessible_total || 1))})` : " (baseline started)"}`,
-    `Pension: ${money(portfolio.pensionTotal)}${prior ? ` (${comparisonLabel}: ${moneySigned(pensionChange)} / ${pctSigned(pensionChange! / Number(prior.pension_total || 1))})` : ""}`,
-    `Headline net worth: ${money(portfolio.netWorthTotal)}${prior ? ` (${comparisonLabel}: ${moneySigned(headlineChange)} / ${pctSigned(headlineChange! / Number(prior.net_worth_total || 1))})` : ""}`,
+    `Portfolio: ${money(portfolio.accessibleTotal)}${prior ? ` | value change: ${moneySigned(totalChange)} / ${pctSigned(totalChange! / Number(prior.accessible_total || 1))}` : " (baseline started)"}`,
+    `Pension: ${money(portfolio.pensionTotal)}${prior ? ` | value change: ${moneySigned(pensionChange)} / ${pctSigned(pensionChange! / Number(prior.pension_total || 1))}` : ""}`,
+    `Headline net worth: ${money(portfolio.netWorthTotal)}${prior ? ` | value change: ${moneySigned(headlineChange)} / ${pctSigned(headlineChange! / Number(prior.net_worth_total || 1))}` : ""}`,
     `Cash: ${money(portfolio.totalCash)} | FX: £1 = $${Number(portfolio.fx || 0).toFixed(4)}`,
+  ];
+  if (prior && portfolioPerformance) {
+    lines.push(
+      "",
+      `Net deposits/withdrawals, ${comparisonLabel}: ${moneySigned(portfolioPerformance.net_flow)}`,
+      `Portfolio performance, ${comparisonLabel}: ${moneySigned(portfolioPerformance.gain_gbp)} / ${pctSigned(portfolioPerformance.gain_pct)}`,
+      benchmark
+        ? `S&P 500, ${comparisonLabel}: ${pctSigned(benchmark.usd_change)} USD | ${pctSigned(benchmark.gbp_change)} GBP`
+        : `S&P 500, ${comparisonLabel}: benchmark unavailable`,
+      benchmark?.relative_gbp !== null && benchmark?.relative_gbp !== undefined
+        ? `Portfolio versus S&P 500 (GBP): ${percentagePointsSigned(benchmark.relative_gbp)}`
+        : "Portfolio versus S&P 500 (GBP): unavailable",
+    );
+    if (benchmark?.date_note) lines.push(benchmark.date_note);
+  }
+  lines.push(
     "",
     `Top 3 gainers, ${comparisonLabel}`,
     ...(gainers.length ? gainers.map((item) => `- ${formatHoldingLine(item)}`) : ["- No comparable gainers yet."]),
@@ -555,7 +733,7 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
     "",
     "Largest 3 positions",
     ...largest.map((item) => `- ${formatHoldingLine(item, item.comparable)}`),
-  ];
+  );
   if (newHoldings.length) {
     lines.push("", "New/unranked this period", ...newHoldings.map((item) => `- ${item.ticker}: no prior snapshot yet`));
   }
