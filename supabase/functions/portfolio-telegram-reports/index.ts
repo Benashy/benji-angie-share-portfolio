@@ -151,10 +151,16 @@ function isReportWindow() {
   return now.hour === REPORT_LOCAL_HOUR && now.minute === REPORT_LOCAL_MINUTE;
 }
 
-function addDaysIso(value: string, days: number) {
-  const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
+function daysBetweenIso(earlier: string, later: string) {
+  const start = new Date(`${earlier.slice(0, 10)}T12:00:00Z`).getTime();
+  const end = new Date(`${later.slice(0, 10)}T12:00:00Z`).getTime();
+  return Math.max(0, Math.round((end - start) / 86_400_000));
+}
+
+function reportDate(value: string) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value;
+  return `${match[3]}/${match[2]}/${match[1]}`;
 }
 
 function money(value: number | null | undefined) {
@@ -454,11 +460,12 @@ async function saveSnapshot(admin: any, portfolio: AnyRow, data: Record<string, 
   return snapshot;
 }
 
-async function findPriorSnapshot(admin: any, targetDate: string) {
+async function findPriorSnapshot(admin: any, reportType: "weekly" | "monthly", currentDate: string) {
   const { data, error } = await admin
     .from("portfolio_report_snapshots")
     .select("*")
-    .lte("snapshot_date", targetDate)
+    .eq("snapshot_kind", reportType)
+    .lt("snapshot_date", currentDate)
     .order("snapshot_date", { ascending: false })
     .limit(1);
   if (error) throw error;
@@ -475,9 +482,25 @@ async function loadHoldingSnapshots(admin: any, snapshotKey: string | null) {
 function holdingChangeRows(current: AnyRow[], prior: Map<string, AnyRow>) {
   return current.map((item) => {
     const old = prior.get(item.ticker);
-    if (!old || !Number(old.value_gbp)) return { ...item, comparable: false, change_gbp: null, change_pct: null };
-    const changeGbp = Number(item.value_gbp || 0) - Number(old.value_gbp || 0);
-    return { ...item, comparable: true, change_gbp: changeGbp, change_pct: changeGbp / Number(old.value_gbp || 0) };
+    const oldQuantity = Number(old?.quantity || 0);
+    const currentQuantity = Number(item.quantity || 0);
+    const oldUnitValue = oldQuantity ? Number(old?.value_gbp || 0) / oldQuantity : 0;
+    const currentUnitValue = currentQuantity ? Number(item.value_gbp || 0) / currentQuantity : 0;
+    if (!old || oldQuantity <= 0 || currentQuantity <= 0 || oldUnitValue <= 0 || currentUnitValue <= 0) {
+      return { ...item, comparable: false, change_gbp: null, change_pct: null };
+    }
+
+    // Compare the shares held across both snapshots so purchases and sales are not
+    // mistaken for market gains or losses. GBP values retain the effect of FX moves.
+    const comparableQuantity = Math.min(oldQuantity, currentQuantity);
+    const changeGbp = (currentUnitValue - oldUnitValue) * comparableQuantity;
+    return {
+      ...item,
+      comparable: true,
+      change_gbp: changeGbp,
+      change_pct: (currentUnitValue - oldUnitValue) / oldUnitValue,
+      quantity_changed: oldQuantity !== currentQuantity,
+    };
   });
 }
 
@@ -492,11 +515,10 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
   const date = todayUk();
   const reportType = type.includes("monthly") ? "monthly" : "weekly";
   const kind = type.startsWith("test_") ? "manual" : reportType;
-  const comparisonDays = reportType === "monthly" ? 30 : 7;
   const data = await loadPortfolioData(admin);
   const portfolio = calculatePortfolio(data);
   const snapshot = await saveSnapshot(admin, portfolio, data, kind, date);
-  const prior = await findPriorSnapshot(admin, addDaysIso(date, -comparisonDays));
+  const prior = await findPriorSnapshot(admin, reportType, date);
   const priorHoldings = await loadHoldingSnapshots(admin, prior?.snapshot_key || null);
   const changedHoldings = holdingChangeRows(portfolio.combined.map((item: AnyRow) => ({
     ...item,
@@ -510,6 +532,9 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
   const totalChange = prior ? Number(portfolio.accessibleTotal || 0) - Number(prior.accessible_total || 0) : null;
   const pensionChange = prior ? Number(portfolio.pensionTotal || 0) - Number(prior.pension_total || 0) : null;
   const headlineChange = prior ? Number(portfolio.netWorthTotal || 0) - Number(prior.net_worth_total || 0) : null;
+  const elapsedDays = prior ? daysBetweenIso(prior.snapshot_date, date) : (reportType === "monthly" ? 30 : 7);
+  const comparisonLabel = `${elapsedDays} day${elapsedDays === 1 ? "" : "s"}`;
+  const priorDateLabel = prior ? reportDate(prior.snapshot_date) : "";
   const title = type.startsWith("test_")
     ? `Test ${reportType} portfolio report`
     : `${reportType === "monthly" ? "Monthly" : "Weekly"} portfolio report`;
@@ -517,15 +542,15 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
     `Benji & Angie's Investment Portfolio`,
     title,
     "",
-    `Portfolio: ${money(portfolio.accessibleTotal)}${prior ? ` (${moneySigned(totalChange)} / ${pctSigned(totalChange! / Number(prior.accessible_total || 1))})` : " (baseline started)"}`,
-    `Pension: ${money(portfolio.pensionTotal)}${prior ? ` (${moneySigned(pensionChange)} / ${pctSigned(pensionChange! / Number(prior.pension_total || 1))})` : ""}`,
-    `Headline net worth: ${money(portfolio.netWorthTotal)}${prior ? ` (${moneySigned(headlineChange)} / ${pctSigned(headlineChange! / Number(prior.net_worth_total || 1))})` : ""}`,
+    `Portfolio: ${money(portfolio.accessibleTotal)}${prior ? ` (${comparisonLabel}: ${moneySigned(totalChange)} / ${pctSigned(totalChange! / Number(prior.accessible_total || 1))})` : " (baseline started)"}`,
+    `Pension: ${money(portfolio.pensionTotal)}${prior ? ` (${comparisonLabel}: ${moneySigned(pensionChange)} / ${pctSigned(pensionChange! / Number(prior.pension_total || 1))})` : ""}`,
+    `Headline net worth: ${money(portfolio.netWorthTotal)}${prior ? ` (${comparisonLabel}: ${moneySigned(headlineChange)} / ${pctSigned(headlineChange! / Number(prior.net_worth_total || 1))})` : ""}`,
     `Cash: ${money(portfolio.totalCash)} | FX: £1 = $${Number(portfolio.fx || 0).toFixed(4)}`,
     "",
-    `Top 3 ${reportType} gainers`,
+    `Top 3 gainers, ${comparisonLabel}`,
     ...(gainers.length ? gainers.map((item) => `- ${formatHoldingLine(item)}`) : ["- No comparable gainers yet."]),
     "",
-    `Top 3 ${reportType} losers`,
+    `Top 3 losers, ${comparisonLabel}`,
     ...(losers.length ? losers.map((item) => `- ${formatHoldingLine(item)}`) : ["- No comparable losers yet."]),
     "",
     "Largest 3 positions",
@@ -534,7 +559,9 @@ async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly
   if (newHoldings.length) {
     lines.push("", "New/unranked this period", ...newHoldings.map((item) => `- ${item.ticker}: no prior snapshot yet`));
   }
-  lines.push("", `Snapshot: ${snapshot.snapshot_date}`);
+  lines.push("", prior
+    ? `Snapshot: ${reportDate(snapshot.snapshot_date)} versus ${priorDateLabel}`
+    : `Snapshot: ${reportDate(snapshot.snapshot_date)} (baseline started)`);
   return { message: lines.join("\n"), snapshot, prior, reportType };
 }
 
