@@ -23,3 +23,9 @@ test("browser assets use pinned third-party versions", () => {
   assert.doesNotMatch(index, /@supabase\/supabase-js@2\/dist/);
   assert.match(index, /@supabase\/supabase-js@2\.57\.4/);
 });
+
+test("form and snapshot dates use the UK calendar rather than UTC", () => {
+  assert.match(app, /const todayIso = \(value = new Date\(\)\)/);
+  assert.match(app, /timeZone: "Europe\/London"/);
+  assert.doesNotMatch(app, /const todayIso = \(\) => new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/);
+});

@@ -1,4 +1,8 @@
 tools/portfolio_backup.env
+node_modules/
+__pycache__/
+*.pyc
+pnpm-lock.yaml
 *.log
 daily/
 monthly/

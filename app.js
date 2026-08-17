@@ -3,12 +3,12 @@ import {
   calculatePortfolioCore,
   orderedTransactions,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-08-19-reliability-2";
+} from "./portfolio-core.js?v=2026-08-19-reliability-3";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-08-19-reliability-2";
+const APP_VERSION = "2026-08-19-reliability-3";
 
 const state = {
   session: null,
@@ -122,7 +122,16 @@ const moneySigned = (value) => {
 const usd = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? "-" : `$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 const pct = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${(Number(value) * 100).toFixed(1)}%`;
 const pctSigned = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? "-" : `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(1)}%`;
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = (value = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(value);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+};
 const isoDateAtNoon = (value) => new Date(`${String(value || todayIso()).slice(0, 10)}T12:00:00Z`);
 const addDaysIso = (value, days) => {
   const date = isoDateAtNoon(value);
