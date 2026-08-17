@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Secure Access</title>
   <link rel="icon" href="favicon.svg?v=2026-06-03-portfolio-icon-1" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=2026-08-12-telegram-benchmark-1">
+  <link rel="stylesheet" href="styles.css?v=2026-08-17-precision-grid-1">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <script src="config.js?v=2026-06-03-live-test-fixes-5"></script>
 </head>
@@ -16,25 +16,35 @@
       <p>Loading secure session...</p>
     </div>
   </div>
-  <main class="page">
-    <section class="hero">
-      <div>
-        <h1>Benji and Angie's Investment Portfolio</h1>
-        <p id="statusLine">Loading portfolio...</p>
-        <nav>
-          <button class="nav active" data-view="dashboard">Dashboard</button>
-          <button class="nav" data-view="holdings">Holdings</button>
-          <button class="nav" data-view="transaction">New Transaction</button>
-          <button class="nav" data-view="ledger">Ledger</button>
-          <button class="nav" data-view="reports">Reports</button>
-          <button class="nav" data-view="audit">Audit</button>
-        </nav>
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="sidebar-brand">
+        <span class="sidebar-monogram">BA</span>
+        <div><strong>Portfolio</strong><small>Private wealth</small></div>
       </div>
-      <div class="hero-total">
-        <div id="headlineNetWorth">-</div>
-        <span>Headline net worth</span>
-      </div>
-    </section>
+      <nav class="sidebar-nav" aria-label="Portfolio sections">
+        <button class="nav active" data-view="dashboard"><span>01</span>Dashboard</button>
+        <button class="nav" data-view="holdings"><span>02</span>Holdings</button>
+        <button class="nav" data-view="transaction"><span>03</span>New Transaction</button>
+        <button class="nav" data-view="ledger"><span>04</span>Ledger</button>
+        <button class="nav" data-view="reports"><span>05</span>Reports</button>
+        <button class="nav" data-view="audit"><span>06</span>Audit</button>
+      </nav>
+      <p class="sidebar-caption">Benji and Angie's<br>Investment Portfolio</p>
+    </aside>
+
+    <main class="page">
+      <section class="hero">
+        <div class="hero-heading">
+          <span class="hero-product">Benji and Angie's Investment Portfolio</span>
+          <h1 id="viewTitle">Dashboard</h1>
+          <p id="statusLine">Loading portfolio...</p>
+        </div>
+        <div class="hero-total">
+          <span>Headline net worth</span>
+          <div id="headlineNetWorth">-</div>
+        </div>
+      </section>
 
     <section id="authCard" class="card auth-card hidden">
       <h2>Sign In</h2>
@@ -64,9 +74,10 @@
     <section id="transactionView" class="view hidden"></section>
     <section id="ledgerView" class="view hidden"></section>
     <section id="reportsView" class="view hidden"></section>
-    <section id="auditView" class="view hidden"></section>
-  </main>
+      <section id="auditView" class="view hidden"></section>
+    </main>
+  </div>
 
-  <script type="module" src="app.js?v=2026-08-12-telegram-benchmark-1"></script>
+  <script type="module" src="app.js?v=2026-08-17-precision-grid-1"></script>
 </body>
 </html>

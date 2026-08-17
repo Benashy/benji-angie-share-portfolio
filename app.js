@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-08-12-telegram-benchmark-1";
+const APP_VERSION = "2026-08-17-precision-grid-1";
 
 const state = {
   session: null,
@@ -2470,6 +2470,15 @@ function bindNavigation() {
 function showView(view) {
   document.querySelectorAll(".view").forEach((section) => section.classList.add("hidden"));
   document.querySelectorAll(".nav").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+  const titles = {
+    dashboard: "Dashboard",
+    holdings: "Holdings",
+    transaction: "New Transaction",
+    ledger: "Ledger",
+    reports: "Reports",
+    audit: "Audit"
+  };
+  if (el("viewTitle")) el("viewTitle").textContent = titles[view] || "Portfolio";
   el(`${view}View`).classList.remove("hidden");
 }
 
