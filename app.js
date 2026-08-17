@@ -1,7 +1,7 @@
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-08-17-precision-grid-1";
+const APP_VERSION = "2026-08-18-ux-polish-1";
 
 const state = {
   session: null,
@@ -10,6 +10,7 @@ const state = {
   ledger: { transactions: [], manual_values: [], pensions: [], audit_log: [], market_prices: [], net_worth_snapshots: [], portfolio_value_snapshots: [], app_status: [], research_statuses: [], holding_name_overrides: [], portfolio_report_settings: [], portfolio_report_runs: [] },
   auditLog: [],
   activeView: "dashboard",
+  activeTransactionPanel: "equity",
   dirtyCloud: false,
   subscriptions: [],
   presenceChannel: null,
@@ -858,7 +859,10 @@ function showDemoMode() {
   el("presencePanel").classList.remove("hidden");
   el("benjiPresence").textContent = "Benji demo";
   el("angiePresence").textContent = "Angie demo";
+  el("mobileBenjiPresence").textContent = "Benji demo";
+  el("mobileAngiePresence").textContent = "Angie demo";
   el("statusLine").textContent = "Demo mode from local seed data. Configure Supabase for shared online access.";
+  renderIcons();
 }
 
 function showAuth() {
@@ -988,8 +992,19 @@ function renderPresence(onlineNames = []) {
     presence.className = `${online ? "presence-online" : "presence-offline"} ${index === 0 ? "presence-primary" : "presence-secondary"}`;
     presence.textContent = `${name} ${online ? "online" : "offline"}`;
     presence.style.order = String(30 + index);
+    const mobilePresence = el(`mobile${name}Presence`);
+    if (mobilePresence) {
+      mobilePresence.className = online ? "presence-online" : "presence-offline";
+      mobilePresence.textContent = `${name} ${online ? "online" : "offline"}`;
+      mobilePresence.style.order = String(index);
+    }
   });
   el("signOutButton").style.order = "32";
+}
+
+function renderIcons() {
+  if (!window.lucide?.createIcons) return;
+  window.lucide.createIcons({ attrs: { "aria-hidden": "true", "stroke-width": 1.7 } });
 }
 
 function renderAll() {
@@ -1013,6 +1028,7 @@ function renderAll() {
   updateLiveMarketAgeLabels(portfolio);
   startMarketAgeTicker();
   startAutoRefresh(portfolio);
+  renderIcons();
 }
 
 function startMarketAgeTicker() {
@@ -1060,7 +1076,8 @@ function renderDashboard(portfolio) {
   }, {});
   const sectorRows = Object.entries(sectorMapRows).sort((a, b) => b[1].value - a[1].value).map(([sector, data]) => {
     const holdingRows = data.holdings.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td>${money(item.value_gbp)}</td></tr>`).join("");
-    return `<tr><td colspan="3"><details class="sector-detail"><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0)}</span></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th></tr></thead><tbody>${holdingRows}</tbody></table></details></td></tr>`;
+    const sectorWeight = portfolio.accessibleTotal ? data.value / portfolio.accessibleTotal : 0;
+    return `<tr><td colspan="3"><details class="sector-detail"><summary><span>${sector}</span><span>${money(data.value)}</span><span>${pct(sectorWeight)}</span><i class="sector-bar" aria-hidden="true"><b style="width:${Math.max(0, Math.min(100, sectorWeight * 100)).toFixed(1)}%"></b></i></summary><table class="compact detail-table"><thead><tr><th>Ticker</th><th>Holding</th><th>Value</th></tr></thead><tbody>${holdingRows}</tbody></table></details></td></tr>`;
   }).join("");
   const accessibleChangeRows = buildAccessibleChangeRows(portfolio).map((row) => {
     if (!row.change) {
@@ -1075,7 +1092,9 @@ function renderDashboard(portfolio) {
   const winners = portfolio.combined.filter((item) => item.gain_pct > 0).sort((a, b) => b.gain_pct - a.gain_pct).slice(0, 10);
   const losers = portfolio.combined.filter((item) => item.gain_pct < 0).sort((a, b) => a.gain_pct - b.gain_pct).slice(0, 10);
   const performanceRows = (items, tone) => items.map((item) => `<tr><td data-sort-value="${escapeHtml(item.ticker)}">${escapeHtml(item.ticker)}</td><td data-sort-value="${escapeHtml(displayHoldingName(item.ticker, item.holding))}">${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td><td data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td><td data-sort-value="${Number(item.gain_pct || 0)}"><span class="${tone}">${pctSigned(item.gain_pct)}</span></td><td data-sort-value="${Number(item.gain_gbp || 0)}"><span class="${tone}">${moneySigned(item.gain_gbp)}</span></td></tr>`).join("") || '<tr><td colspan="5">None</td></tr>';
-  const historyRows = buildNetWorthHistory(portfolio).map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td><td>${formatHistoryChange(row.change_1m)}</td><td>${formatHistoryChange(row.change_6m)}</td><td>${formatHistoryChange(row.change_12m)}</td></tr>`).join("");
+  const historyData = buildNetWorthHistory(portfolio);
+  const historyRows = historyData.map((row) => `<tr><td>${displayDate(row.date)}</td><td>${money(row.net_worth_total)}</td><td>${money(row.accessible_total)}</td><td>${money(row.pension_total)}</td><td>${formatHistoryChange(row.change_1m)}</td><td>${formatHistoryChange(row.change_6m)}</td><td>${formatHistoryChange(row.change_12m)}</td></tr>`).join("");
+  const historyChart = buildNetWorthChart(historyData);
   const topHoldingText = top ? `${escapeHtml(top.ticker)} · ${money(top.value_gbp)} · ${pct(portfolio.accessibleTotal ? top.value_gbp / portfolio.accessibleTotal : 0)}` : "-";
   const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
   const fxFreshClass = fxUpdated === "more than an hour ago" ? " market-error" : fxUpdated === "not refreshed" ? "" : " market-ok";
@@ -1084,18 +1103,20 @@ function renderDashboard(portfolio) {
       <div class="card"><div class="subtle">Portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
       <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
     </section>
-    <section class="card market-session-card">
-      <h2>Market Status</h2>
-      <div class="market-session-grid">${marketSessionMarkup()}</div>
-      <p class="footnote">Uses regular LSE and NYSE/Nasdaq sessions, weekends, published holidays and known early closes. Unscheduled market closures are not included.</p>
-    </section>
-    <section class="card accessible-change-card">
-      <h2>Portfolio Change</h2>
-      <table class="compact change-table">
-        <thead><tr><th>Period</th><th>GBP change</th><th>% change</th></tr></thead>
-        <tbody>${accessibleChangeRows}</tbody>
-      </table>
-      <p class="footnote">${accessibleChangeFootnote}</p>
+    <section class="dashboard-pair">
+      <section class="card market-session-card">
+        <h2>Market Status</h2>
+        <div class="market-session-grid">${marketSessionMarkup()}</div>
+        <p class="footnote">Uses regular LSE and NYSE/Nasdaq sessions, weekends, published holidays and known early closes. Unscheduled market closures are not included.</p>
+      </section>
+      <section class="card accessible-change-card">
+        <h2>Portfolio Change</h2>
+        <table class="compact change-table">
+          <thead><tr><th>Period</th><th>GBP change</th><th>% change</th></tr></thead>
+          <tbody>${accessibleChangeRows}</tbody>
+        </table>
+        <p class="footnote">${accessibleChangeFootnote}</p>
+      </section>
     </section>
     <section class="grid two">
       <div class="card"><h2>Portfolio Highlights</h2>
@@ -1118,14 +1139,29 @@ function renderDashboard(portfolio) {
           </details>
         </div>
       </div>
-      <div class="card"><h2>Sector Exposure</h2><table><thead><tr><th colspan="3">Area / Value / Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
+      <div class="card"><h2>Sector Exposure</h2><table class="sector-table"><thead><tr><th>Area</th><th>Value</th><th>Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
-    <section class="card gain-card"><h2>Top Gainers</h2><div class="table-shell"><table class="sortable performance-table"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table></div><p class="footnote">Performance is measured since purchase.</p></section>
-    <section class="card loss-card"><h2>Top Losers</h2><div class="table-shell"><table class="sortable performance-table"><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table></div><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></section>
-    <section class="card"><details class="history-detail"><summary>Net Worth History</summary><table><thead><tr><th>Date</th><th>Headline</th><th>Portfolio</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on the first signed-in use of that month.</p></details></section>
+    <section class="card gain-card performance-card"><h2>Top Gainers</h2><div class="table-shell"><table class="sortable performance-table" data-performance-table><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table></div><button type="button" class="secondary mobile-performance-toggle">View all</button><p class="footnote">Performance is measured since purchase.</p></section>
+    <section class="card loss-card performance-card"><h2>Top Losers</h2><div class="table-shell"><table class="sortable performance-table" data-performance-table><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table></div><button type="button" class="secondary mobile-performance-toggle">View all</button><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></section>
+    <section class="card"><details class="history-detail"><summary>Net Worth History</summary>${historyChart}<div class="table-shell"><table class="history-table"><thead><tr><th>Date</th><th>Headline</th><th>Portfolio</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table></div><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on the first signed-in use of that month.</p></details></section>
   `;
   bindRefreshButtons();
   wireSortableTables();
+  wireMobilePerformanceToggles();
+  renderIcons();
+}
+
+function wireMobilePerformanceToggles() {
+  document.querySelectorAll(".performance-card").forEach((card) => {
+    const button = card.querySelector(".mobile-performance-toggle");
+    if (!button) return;
+    const rows = card.querySelectorAll("tbody tr");
+    if (rows.length <= 5) button.classList.add("hidden");
+    button.addEventListener("click", () => {
+      const expanded = card.classList.toggle("performance-expanded");
+      button.textContent = expanded ? "Show first five" : "View all";
+    });
+  });
 }
 
 function buildNetWorthHistory(portfolio) {
@@ -1149,6 +1185,31 @@ function buildNetWorthHistory(portfolio) {
     change_6m: netWorthChange(row, findPreviousSnapshot(rows, row, 6)),
     change_12m: netWorthChange(row, findPreviousSnapshot(rows, row, 12))
   }));
+}
+
+function buildNetWorthChart(rows) {
+  const points = [...rows]
+    .filter((row) => Number.isFinite(Number(row.net_worth_total)) && Number(row.net_worth_total) > 0)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (!points.length) return '<div class="history-chart-empty">Chart begins after the first monthly snapshot.</div>';
+  const width = 760;
+  const height = 180;
+  const insetX = 22;
+  const insetY = 22;
+  const values = points.map((row) => Number(row.net_worth_total));
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const spread = Math.max(rawMax - rawMin, rawMax * 0.04, 1);
+  const min = rawMin - spread * 0.18;
+  const max = rawMax + spread * 0.18;
+  const xFor = (index) => points.length === 1 ? width / 2 : insetX + (index / (points.length - 1)) * (width - insetX * 2);
+  const yFor = (value) => height - insetY - ((value - min) / (max - min)) * (height - insetY * 2);
+  const linePoints = points.map((row, index) => `${xFor(index).toFixed(1)},${yFor(Number(row.net_worth_total)).toFixed(1)}`).join(" ");
+  const areaPoints = `${insetX},${height - insetY} ${linePoints} ${points.length === 1 ? width / 2 : width - insetX},${height - insetY}`;
+  const dots = points.map((row, index) => `<circle cx="${xFor(index).toFixed(1)}" cy="${yFor(Number(row.net_worth_total)).toFixed(1)}" r="3"><title>${displayDate(row.date)}: ${money(row.net_worth_total)}</title></circle>`).join("");
+  const guideLines = [0.25, 0.5, 0.75].map((ratio) => `<line x1="${insetX}" x2="${width - insetX}" y1="${(insetY + ratio * (height - insetY * 2)).toFixed(1)}" y2="${(insetY + ratio * (height - insetY * 2)).toFixed(1)}"></line>`).join("");
+  const label = `Headline net worth from ${displayDate(points[0].date)} to ${displayDate(points[points.length - 1].date)}`;
+  return `<div class="history-chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}" preserveAspectRatio="none"><g class="history-chart-guides">${guideLines}</g><polygon points="${areaPoints}"></polygon><polyline points="${linePoints}"></polyline><g class="history-chart-points">${dots}</g></svg><div class="history-chart-labels"><span>${displayDate(points[0].date)}</span><strong>${money(points[points.length - 1].net_worth_total)}</strong><span>${displayDate(points[points.length - 1].date)}</span></div></div>`;
 }
 
 function monthIndex(monthKey) {
@@ -1313,25 +1374,42 @@ function renderHoldings(portfolio) {
     `;
     return `
       <tr class="holding-main-row" data-key="${detailKey}">
-        <td data-sort-value="${escapeHtml(item.ticker)}"><strong>${escapeHtml(item.ticker)}</strong></td>
-        <td data-sort-value="${escapeHtml(displayHoldingName(item.ticker, item.holding))}">${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td>
-        <td data-sort-value="${escapeHtml(item.owner)}">${ownerCell}</td>
-        <td data-sort-value="${escapeHtml(item.account)}">${escapeHtml(item.account)}</td>
-        <td data-sort-value="${Number(item.quantity || 0)}">${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-        <td data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td>
-        <td data-sort-value="${Number(item.gain_pct || 0)}">${pctSigned(item.gain_pct)}</td>
-        <td data-sort-value="${escapeHtml(researchMeta.label)}">${researchCell}</td>
-        <td>${statusBadge(item.gain_pct)}</td>
+        <td class="holding-cell holding-ticker" data-sort-value="${escapeHtml(item.ticker)}"><strong>${escapeHtml(item.ticker)}</strong></td>
+        <td class="holding-cell holding-name" data-sort-value="${escapeHtml(displayHoldingName(item.ticker, item.holding))}">${escapeHtml(displayHoldingName(item.ticker, item.holding))}</td>
+        <td class="holding-cell holding-owner" data-sort-value="${escapeHtml(item.owner)}">${ownerCell}</td>
+        <td class="holding-cell holding-account" data-sort-value="${escapeHtml(item.account)}">${escapeHtml(item.account)}</td>
+        <td class="holding-cell holding-shares" data-sort-value="${Number(item.quantity || 0)}">${Number(item.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+        <td class="holding-cell holding-value" data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td>
+        <td class="holding-cell holding-gain" data-sort-value="${Number(item.gain_pct || 0)}">${pctSigned(item.gain_pct)}</td>
+        <td class="holding-cell holding-research" data-sort-value="${escapeHtml(researchMeta.label)}">${researchCell}</td>
+        <td class="holding-cell holding-status">${statusBadge(item.gain_pct)}</td>
       </tr>
       ${detailRow}
     `;
   }).join("");
   const goldilocksRows = researchStatusOptions.map((option) => `<tr><td>${researchStatusBadge({ status: option.value })}</td><td>${escapeHtml(option.meaning)}</td></tr>`).join("");
-  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2>${saveBanner("holdings")}<div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-research"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Research Status</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Portfolio status is calculated from gain/loss since purchase. Research Status is manually selected using the Alpesh Patel Goldilocks/MACD framework and should be read as research context, not financial advice.</p></section><section class="card"><details class="history-detail"><summary>Goldilocks / MACD Legend</summary><table class="compact detail-table"><thead><tr><th>Status</th><th>Big-picture meaning</th></tr></thead><tbody>${goldilocksRows}</tbody></table><p class="footnote">Bear labels take precedence: Daddy Bear first, then Mummy Bear, then Baby Bear. Alpesh's public material sometimes uses Mommy Bear; this app uses Mummy Bear.</p></details></section>`;
+  el("holdingsView").innerHTML = `<section class="card"><h2>Current Holdings <span class="subtle">${portfolio.combined.length} holdings</span></h2>${saveBanner("holdings")}<div class="mobile-table-tools"><label>Sort holdings<select id="mobileHoldingsSort"><option value="0">Ticker</option><option value="1">Holding</option><option value="5" selected>Value</option><option value="6">Gain/loss</option><option value="7">Research status</option></select></label><button id="mobileHoldingsDirection" type="button" class="secondary" aria-label="Reverse sort order"><i data-lucide="arrow-down-up"></i></button></div><div class="table-shell"><table class="sortable holdings-table"><colgroup><col class="col-ticker"><col class="col-holding"><col class="col-owner"><col class="col-account"><col class="col-shares"><col class="col-value"><col class="col-gain"><col class="col-research"><col class="col-status"></colgroup><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="text">Owner</th><th data-sort="text">Account</th><th data-sort="number">Shares</th><th data-sort="number">Value</th><th data-sort="number">Gain/loss</th><th data-sort="text">Research Status</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div><p class="footnote">Portfolio status is calculated from gain/loss since purchase. Research Status is manually selected using the Alpesh Patel Goldilocks/MACD framework and should be read as research context, not financial advice.</p></section><section class="card"><details class="history-detail"><summary>Goldilocks / MACD Legend</summary><table class="compact detail-table"><thead><tr><th>Status</th><th>Big-picture meaning</th></tr></thead><tbody>${goldilocksRows}</tbody></table><p class="footnote">Bear labels take precedence: Daddy Bear first, then Mummy Bear, then Baby Bear. Alpesh's public material sometimes uses Mommy Bear; this app uses Mummy Bear.</p></details></section>`;
   wireHoldingDetails();
   wireResearchStatusForms();
   wireHoldingNameForms();
   wireSortableTables();
+  wireMobileHoldingsSort();
+  renderIcons();
+}
+
+function wireMobileHoldingsSort() {
+  const select = el("mobileHoldingsSort");
+  const direction = el("mobileHoldingsDirection");
+  const table = document.querySelector(".holdings-table");
+  if (!select || !direction || !table) return;
+  const sort = () => {
+    const header = table.querySelectorAll("th")[Number(select.value)];
+    header?.click();
+    direction.dataset.direction = header?.dataset.direction || "asc";
+    direction.setAttribute("aria-label", direction.dataset.direction === "asc" ? "Currently ascending. Reverse sort order" : "Currently descending. Reverse sort order");
+  };
+  select.addEventListener("change", sort);
+  direction.addEventListener("click", sort);
 }
 
 function wireHoldingDetails() {
@@ -1588,11 +1666,17 @@ function renderTransaction(portfolio) {
   const disabled = !isConfigured ? "disabled" : "";
   const note = !isConfigured ? '<p class="notice">Demo mode is view-only. Configure Supabase to enable shared edits.</p>' : "";
   const cashConfirm = state.pendingCashConfirm ? renderCashConfirm(portfolio) : "";
+  const activePanel = ["equity", "cash", "manual"].includes(state.activeTransactionPanel) ? state.activeTransactionPanel : "equity";
   el("transactionView").innerHTML = `
     ${note}
     ${cashConfirm}
-    <section class="grid two">
-      <div class="card">
+    <section class="transaction-workspace">
+      <div class="transaction-tabs" role="tablist" aria-label="Transaction type">
+        <button type="button" role="tab" data-transaction-tab="equity" aria-selected="${activePanel === "equity"}"><i data-lucide="line-chart"></i><span>Equity</span></button>
+        <button type="button" role="tab" data-transaction-tab="cash" aria-selected="${activePanel === "cash"}"><i data-lucide="credit-card"></i><span>Cash</span></button>
+        <button type="button" role="tab" data-transaction-tab="manual" aria-selected="${activePanel === "manual"}"><i data-lucide="edit-3"></i><span>Manual value</span></button>
+      </div>
+      <div class="card transaction-panel ${activePanel === "equity" ? "active" : ""}" data-transaction-panel="equity" role="tabpanel">
         <h2>Buy / Sell Equity</h2>
         ${saveBanner("equity")}
         <form id="equityForm">
@@ -1610,7 +1694,7 @@ function renderTransaction(portfolio) {
           <button ${disabled}>Add equity transaction</button>
         </form>
       </div>
-      <div class="card">
+      <div class="card transaction-panel ${activePanel === "cash" ? "active" : ""}" data-transaction-panel="cash" role="tabpanel">
         <h2>Cash Deposit / Withdrawal</h2>
         ${saveBanner("cash")}
         <form id="cashForm">
@@ -1625,22 +1709,34 @@ function renderTransaction(portfolio) {
           <button ${disabled}>Add cash transaction</button>
         </form>
       </div>
-    </section>
-    <section class="card" style="margin-top:18px">
-      <h2>Manual Updates</h2>
-      ${saveBanner("manual")}
-      <form id="manualForm">
-        <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
-        <label>Type</label><select name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
-        <label>Account / pension name</label><select name="account" ${disabled}></select>
-        <div class="transaction-total">Current value: <strong id="manualCurrent">-</strong> | Difference: <strong id="manualDifference" class="neutral-text">-</strong></div>
-        <label>Currency</label><select name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
-        <label>New Value</label><input name="value" type="number" step="any" required ${disabled}>
-        <button ${disabled}>Save manual value</button>
-      </form>
+      <div class="card transaction-panel ${activePanel === "manual" ? "active" : ""}" data-transaction-panel="manual" role="tabpanel">
+        <h2>Manual Updates</h2>
+        ${saveBanner("manual")}
+        <form id="manualForm">
+          <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
+          <label>Type</label><select name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
+          <label>Account / pension name</label><select name="account" ${disabled}></select>
+          <div class="transaction-total">Current value: <strong id="manualCurrent">-</strong> | Difference: <strong id="manualDifference" class="neutral-text">-</strong></div>
+          <label>Currency</label><select name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
+          <label>New Value</label><input name="value" type="number" step="any" required ${disabled}>
+          <button ${disabled}>Save manual value</button>
+        </form>
+      </div>
     </section>
   `;
+  wireTransactionTabs();
   wireTransactionForms(portfolio);
+  renderIcons();
+}
+
+function wireTransactionTabs() {
+  const tabs = [...document.querySelectorAll("[data-transaction-tab]")];
+  const panels = [...document.querySelectorAll("[data-transaction-panel]")];
+  tabs.forEach((tab) => tab.addEventListener("click", () => {
+    state.activeTransactionPanel = tab.dataset.transactionTab;
+    tabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+    panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.transactionPanel === state.activeTransactionPanel));
+  }));
 }
 
 function renderCashConfirm(portfolio) {
@@ -1792,6 +1888,7 @@ function setupManualForm(form, portfolio) {
 
 async function submitEquity(event, portfolio) {
   event.preventDefault();
+  state.activeTransactionPanel = "equity";
   if (state.busyForms.equity) return;
   state.busyForms.equity = true;
   const form = event.currentTarget;
@@ -1870,6 +1967,7 @@ async function submitCashConfirmation(event, portfolio) {
 
 async function submitCash(event, portfolio) {
   event.preventDefault();
+  state.activeTransactionPanel = "cash";
   if (state.busyForms.cash) return;
   state.busyForms.cash = true;
   const form = event.currentTarget;
@@ -1912,6 +2010,7 @@ async function submitCash(event, portfolio) {
 
 async function submitManual(event, portfolio) {
   event.preventDefault();
+  state.activeTransactionPanel = "manual";
   if (state.busyForms.manual) return;
   state.busyForms.manual = true;
   const form = event.currentTarget;
@@ -2070,29 +2169,31 @@ function renderLedger() {
     const isCash = tx.type === "deposit" || tx.type === "withdrawal";
     const actionButtons = tx.is_locked || !isConfigured
       ? '<span class="subtle">Locked</span>'
-      : `<div class="inline-row"><button class="secondary small" data-edit="${tx.id}">Edit</button><button class="danger small" data-delete="${tx.id}">Delete</button></div>`;
+      : `<div class="inline-row"><button class="secondary small" data-edit="${tx.id}"><i data-lucide="pencil"></i><span>Edit</span></button><button class="danger small" data-delete="${tx.id}"><i data-lucide="trash-2"></i><span>Delete</span></button></div>`;
     const noteDetail = tx.notes ? `<details class="ledger-note-detail"><summary>Notes</summary><p>${escapeHtml(tx.notes)}</p></details>` : "";
-    const actions = `<div class="ledger-action-stack">${actionButtons}${noteDetail}</div>`;
+    const mobileDetail = `<details class="mobile-ledger-detail"><summary>Entry details</summary><dl><div><dt>Timestamp</dt><dd>${displayDateTime(tx.updated_at || tx.created_at)}</dd></div><div><dt>Entered by</dt><dd>${escapeHtml(actorName(tx.created_by || tx.updated_by))}</dd></div><div><dt>Type</dt><dd>${escapeHtml(tx.type)}</dd></div><div><dt>Owner</dt><dd>${escapeHtml(tx.owner)}</dd></div><div><dt>Quantity</dt><dd>${isCash ? "-" : Number(tx.quantity || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</dd></div><div><dt>Price</dt><dd>${isCash ? "-" : escapeHtml(tx.price)}</dd></div><div><dt>Currency</dt><dd>${escapeHtml(tx.currency)}</dd></div></dl></details>`;
+    const actions = `<div class="ledger-action-stack">${actionButtons}${noteDetail}${mobileDetail}</div>`;
     return `
-      <tr>
-        <td>${displayDate(tx.date)}</td>
-        <td>${displayDateTime(tx.updated_at || tx.created_at)}</td>
-        <td>${escapeHtml(actorName(tx.created_by || tx.updated_by))}</td>
-        <td>${escapeHtml(tx.type)}</td>
-        <td>${escapeHtml(tx.owner)}</td>
-        <td>${escapeHtml(tx.account)}</td>
-        <td>${escapeHtml(tx.ticker)}</td>
-        <td>${isCash ? "-" : Number(tx.quantity || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-        <td>${isCash ? "-" : escapeHtml(tx.price)}</td>
-        <td>${escapeHtml(tx.currency)}</td>
-        <td>${money(tx.amount_gbp)}</td>
-        <td>${actions}</td>
+      <tr class="ledger-entry-row">
+        <td class="ledger-date">${displayDate(tx.date)}</td>
+        <td class="ledger-timestamp">${displayDateTime(tx.updated_at || tx.created_at)}</td>
+        <td class="ledger-entered">${escapeHtml(actorName(tx.created_by || tx.updated_by))}</td>
+        <td class="ledger-type">${escapeHtml(tx.type)}</td>
+        <td class="ledger-owner">${escapeHtml(tx.owner)}</td>
+        <td class="ledger-account">${escapeHtml(tx.account)}</td>
+        <td class="ledger-ticker">${escapeHtml(tx.ticker)}</td>
+        <td class="ledger-quantity">${isCash ? "-" : Number(tx.quantity || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+        <td class="ledger-price">${isCash ? "-" : escapeHtml(tx.price)}</td>
+        <td class="ledger-currency">${escapeHtml(tx.currency)}</td>
+        <td class="ledger-amount">${money(tx.amount_gbp)}</td>
+        <td class="ledger-actions">${actions}</td>
       </tr>
     `;
   };
-  const renderValuationRow = (row) => `
-    <tr class="valuation-row"><td>${displayDate(row.date)}</td><td>${displayDateTime(row.created_at)}</td><td>${escapeHtml(actorName(row.created_by || row.updated_by))}</td><td>${escapeHtml(row.type)}</td><td>${escapeHtml(row.owner)}</td><td>${escapeHtml(row.account)}</td><td>${escapeHtml(row.ticker)}</td><td>${row.quantity}</td><td>${row.price}</td><td>${escapeHtml(row.currency)}</td><td>${money(row.amount)}</td><td><span class="subtle">Audit</span></td></tr>
-  `;
+  const renderValuationRow = (row) => {
+    const mobileDetail = `<details class="mobile-ledger-detail"><summary>Entry details</summary><dl><div><dt>Timestamp</dt><dd>${displayDateTime(row.created_at)}</dd></div><div><dt>Entered by</dt><dd>${escapeHtml(actorName(row.created_by || row.updated_by))}</dd></div><div><dt>Type</dt><dd>${escapeHtml(row.type)}</dd></div><div><dt>Owner</dt><dd>${escapeHtml(row.owner)}</dd></div><div><dt>Currency</dt><dd>${escapeHtml(row.currency)}</dd></div></dl></details>`;
+    return `<tr class="valuation-row ledger-entry-row"><td class="ledger-date">${displayDate(row.date)}</td><td class="ledger-timestamp">${displayDateTime(row.created_at)}</td><td class="ledger-entered">${escapeHtml(actorName(row.created_by || row.updated_by))}</td><td class="ledger-type">${escapeHtml(row.type)}</td><td class="ledger-owner">${escapeHtml(row.owner)}</td><td class="ledger-account">${escapeHtml(row.account)}</td><td class="ledger-ticker">${escapeHtml(row.ticker)}</td><td class="ledger-quantity">${row.quantity}</td><td class="ledger-price">${row.price}</td><td class="ledger-currency">${escapeHtml(row.currency)}</td><td class="ledger-amount">${money(row.amount)}</td><td class="ledger-actions"><div class="ledger-action-stack"><span class="subtle">Audit</span>${mobileDetail}</div></td></tr>`;
+  };
   const ledgerItems = [
     ...activeRows(state.ledger.transactions).map((row) => ({
       date: row.date,
@@ -2119,10 +2220,10 @@ function renderLedger() {
   const olderLedger = olderRows ? `
     <details class="ledger-history-detail">
       <summary>Older ledger entries (${ledgerItems.length - 5})</summary>
-      <div class="table-shell"><table><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
+      <div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
     </details>
   ` : "";
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small">Download ledger backup</button><span class="backup-status">${escapeHtml(backupText)}</span></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small"><i data-lucide="download"></i><span>Download ledger backup</span></button><span class="backup-status">${escapeHtml(backupText)}</span></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
   el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
@@ -2136,6 +2237,7 @@ function renderLedger() {
     state.editingTransaction = null;
     renderLedger();
   });
+  renderIcons();
 }
 
 function renderEditTransactionCard(tx) {
@@ -2453,7 +2555,27 @@ function bindNavigation() {
     button.addEventListener("click", () => {
       state.activeView = button.dataset.view;
       showView(state.activeView);
+      closeShellMenu("mobileMoreMenu", "mobileMoreButton");
     });
+  });
+  el("mobileMoreButton")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleShellMenu("mobileMoreMenu", "mobileMoreButton");
+    closeShellMenu("mobileAccountMenu", "mobileAccountButton");
+  });
+  el("mobileAccountButton")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleShellMenu("mobileAccountMenu", "mobileAccountButton");
+    closeShellMenu("mobileMoreMenu", "mobileMoreButton");
+  });
+  document.addEventListener("click", (event) => {
+    if (!el("mobileMoreMenu")?.contains(event.target)) closeShellMenu("mobileMoreMenu", "mobileMoreButton");
+    if (!el("mobileAccountMenu")?.contains(event.target)) closeShellMenu("mobileAccountMenu", "mobileAccountButton");
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    closeShellMenu("mobileMoreMenu", "mobileMoreButton");
+    closeShellMenu("mobileAccountMenu", "mobileAccountButton");
   });
   el("refreshCloudButton").addEventListener("click", async () => {
     if (state.marketMessageTimer) window.clearTimeout(state.marketMessageTimer);
@@ -2467,9 +2589,26 @@ function bindNavigation() {
   });
 }
 
+function toggleShellMenu(menuId, buttonId) {
+  const menu = el(menuId);
+  const button = el(buttonId);
+  if (!menu || !button) return;
+  const willOpen = menu.classList.contains("hidden");
+  menu.classList.toggle("hidden", !willOpen);
+  button.setAttribute("aria-expanded", String(willOpen));
+}
+
+function closeShellMenu(menuId, buttonId) {
+  const menu = el(menuId);
+  const button = el(buttonId);
+  menu?.classList.add("hidden");
+  button?.setAttribute("aria-expanded", "false");
+}
+
 function showView(view) {
   document.querySelectorAll(".view").forEach((section) => section.classList.add("hidden"));
   document.querySelectorAll(".nav").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+  el("mobileMoreButton")?.classList.toggle("active", view === "reports" || view === "audit");
   const titles = {
     dashboard: "Dashboard",
     holdings: "Holdings",
@@ -2572,6 +2711,7 @@ function bindAuth() {
     }
     if (supabaseClient) await supabaseClient.auth.signOut();
   });
+  el("mobileSignOutButton")?.addEventListener("click", () => el("signOutButton")?.click());
 }
 
 function hideBootScreen() {

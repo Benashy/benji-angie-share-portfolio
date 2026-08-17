@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Secure Access</title>
   <link rel="icon" href="favicon.svg?v=2026-06-03-portfolio-icon-1" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=2026-08-17-precision-grid-1">
+  <link rel="stylesheet" href="styles.css?v=2026-08-18-ux-polish-1">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="https://unpkg.com/lucide@1.28.0/dist/umd/lucide.js"></script>
   <script src="config.js?v=2026-06-03-live-test-fixes-5"></script>
 </head>
 <body>
@@ -23,12 +24,14 @@
         <div><strong>Portfolio</strong><small>Private wealth</small></div>
       </div>
       <nav class="sidebar-nav" aria-label="Portfolio sections">
-        <button class="nav active" data-view="dashboard"><span>01</span>Dashboard</button>
-        <button class="nav" data-view="holdings"><span>02</span>Holdings</button>
-        <button class="nav" data-view="transaction"><span>03</span>New Transaction</button>
-        <button class="nav" data-view="ledger"><span>04</span>Ledger</button>
-        <button class="nav" data-view="reports"><span>05</span>Reports</button>
-        <button class="nav" data-view="audit"><span>06</span>Audit</button>
+        <button class="nav active" data-view="dashboard"><span class="nav-index">01</span><i data-lucide="layout-dashboard"></i><b>Dashboard</b></button>
+        <button class="nav" data-view="holdings"><span class="nav-index">02</span><i data-lucide="briefcase"></i><b>Holdings</b></button>
+        <button class="nav" data-view="transaction"><span class="nav-index">03</span><i data-lucide="plus-circle"></i><b>New Transaction</b></button>
+        <button class="nav" data-view="ledger"><span class="nav-index">04</span><i data-lucide="book-open"></i><b>Ledger</b></button>
+        <span class="nav-group-label">Administration</span>
+        <button class="nav nav-secondary" data-view="reports"><span class="nav-index">05</span><i data-lucide="send"></i><b>Reports</b></button>
+        <button class="nav nav-secondary" data-view="audit"><span class="nav-index">06</span><i data-lucide="shield-check"></i><b>Audit</b></button>
+        <button id="mobileMoreButton" class="mobile-more-button" type="button" aria-expanded="false" aria-controls="mobileMoreMenu"><i data-lucide="more-horizontal"></i><b>More</b></button>
       </nav>
       <p class="sidebar-caption">Benji and Angie's<br>Investment Portfolio</p>
     </aside>
@@ -61,12 +64,18 @@
     </section>
 
     <section id="presencePanel" class="presence-panel hidden">
-      <button type="button" class="secondary small refresh-prices-action">Refresh prices</button>
+      <button type="button" class="secondary small refresh-prices-action"><i data-lucide="refresh-cw"></i><span>Refresh prices</span></button>
       <span id="marketDataSummary">Market data not loaded</span>
       <span id="benjiPresence">Benji offline</span>
       <span id="angiePresence">Angie offline</span>
       <button id="refreshCloudButton" class="secondary small hidden">New data available - refresh</button>
       <button id="signOutButton" class="secondary small">Sign out</button>
+      <button id="mobileAccountButton" class="mobile-account-button" type="button" aria-expanded="false" aria-controls="mobileAccountMenu" aria-label="Account and presence"><i data-lucide="user-circle"></i></button>
+      <div id="mobileAccountMenu" class="mobile-account-menu hidden">
+        <span id="mobileBenjiPresence">Benji offline</span>
+        <span id="mobileAngiePresence">Angie offline</span>
+        <button id="mobileSignOutButton" class="secondary small"><i data-lucide="log-out"></i><span>Sign out</span></button>
+      </div>
     </section>
 
     <section id="dashboardView" class="view"></section>
@@ -78,6 +87,11 @@
     </main>
   </div>
 
-  <script type="module" src="app.js?v=2026-08-17-precision-grid-1"></script>
+  <div id="mobileMoreMenu" class="mobile-more-menu hidden" aria-label="More portfolio sections">
+    <button class="nav mobile-nav-secondary" data-view="reports"><i data-lucide="send"></i><b>Reports</b></button>
+    <button class="nav mobile-nav-secondary" data-view="audit"><i data-lucide="shield-check"></i><b>Audit</b></button>
+  </div>
+
+  <script type="module" src="app.js?v=2026-08-18-ux-polish-1"></script>
 </body>
 </html>
