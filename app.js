@@ -1,7 +1,14 @@
+import {
+  availableQuantityForSale,
+  calculatePortfolioCore,
+  orderedTransactions,
+  validateTransactionInput,
+} from "./supabase/functions/_shared/portfolio-core.js";
+
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-08-18-ux-polish-1";
+const APP_VERSION = "2026-08-19-reliability-1";
 
 const state = {
   session: null,
@@ -83,12 +90,7 @@ const marketDefinitions = [
     exchange: "LSE",
     timeZone: "Europe/London",
     open: [8, 0],
-    close: [16, 30],
-    holidays: {
-      2026: ["2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25", "2026-08-31", "2026-12-25", "2026-12-28"],
-      2027: ["2027-01-01", "2027-03-26", "2027-03-29", "2027-05-03", "2027-05-31", "2027-08-30", "2027-12-27", "2027-12-28"]
-    },
-    earlyCloses: {}
+    close: [16, 30]
   },
   {
     code: "US",
@@ -96,16 +98,7 @@ const marketDefinitions = [
     exchange: "NYSE/Nasdaq",
     timeZone: "America/New_York",
     open: [9, 30],
-    close: [16, 0],
-    holidays: {
-      2026: ["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"],
-      2027: ["2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24"]
-    },
-    earlyCloses: {
-      "2026-11-27": [13, 0],
-      "2026-12-24": [13, 0],
-      "2027-11-26": [13, 0]
-    }
+    close: [16, 0]
   }
 ];
 
@@ -235,11 +228,125 @@ function localKey(parts) {
   return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
+function utcDateKey(date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
+function observedHolidayKey(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  if (date.getUTCDay() === 6) date.setUTCDate(date.getUTCDate() - 1);
+  if (date.getUTCDay() === 0) date.setUTCDate(date.getUTCDate() + 1);
+  return utcDateKey(date);
+}
+
+function nextWeekdayHolidayKey(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  while ([0, 6].includes(date.getUTCDay())) date.setUTCDate(date.getUTCDate() + 1);
+  return utcDateKey(date);
+}
+
+function nthWeekdayKey(year, month, weekday, occurrence) {
+  const date = new Date(Date.UTC(year, month - 1, 1, 12));
+  date.setUTCDate(1 + ((7 + weekday - date.getUTCDay()) % 7) + ((occurrence - 1) * 7));
+  return utcDateKey(date);
+}
+
+function lastWeekdayKey(year, month, weekday) {
+  const date = new Date(Date.UTC(year, month, 0, 12));
+  date.setUTCDate(date.getUTCDate() - ((7 + date.getUTCDay() - weekday) % 7));
+  return utcDateKey(date);
+}
+
+function easterSunday(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(Date.UTC(year, month - 1, day, 12));
+}
+
+function offsetDateKey(date, days) {
+  const shifted = new Date(date);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return utcDateKey(shifted);
+}
+
+function christmasClosureKeys(year) {
+  const dates = [];
+  const christmas = new Date(Date.UTC(year, 11, 25, 12));
+  const boxingDay = new Date(Date.UTC(year, 11, 26, 12));
+  if (![0, 6].includes(christmas.getUTCDay())) dates.push(utcDateKey(christmas));
+  if (![0, 6].includes(boxingDay.getUTCDay())) dates.push(utcDateKey(boxingDay));
+  let substitute = new Date(Date.UTC(year, 11, 27, 12));
+  while (dates.length < 2) {
+    if (![0, 6].includes(substitute.getUTCDay()) && !dates.includes(utcDateKey(substitute))) dates.push(utcDateKey(substitute));
+    substitute.setUTCDate(substitute.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+function marketCalendar(code, year) {
+  const easter = easterSunday(year);
+  if (code === "UK") {
+    const newYear = nextWeekdayHolidayKey(year, 1, 1);
+    const holidays = new Set([
+      newYear,
+      offsetDateKey(easter, -2),
+      offsetDateKey(easter, 1),
+      nthWeekdayKey(year, 5, 1, 1),
+      lastWeekdayKey(year, 5, 1),
+      lastWeekdayKey(year, 8, 1),
+      ...christmasClosureKeys(year)
+    ]);
+    const earlyCloses = {};
+    for (const [month, day] of [[12, 24], [12, 31]]) {
+      const date = new Date(Date.UTC(year, month - 1, day, 12));
+      const key = utcDateKey(date);
+      if (![0, 6].includes(date.getUTCDay()) && !holidays.has(key)) earlyCloses[key] = [12, 30];
+    }
+    return { holidays, earlyCloses };
+  }
+
+  const holidayKeys = [
+    observedHolidayKey(year, 1, 1),
+    nthWeekdayKey(year, 1, 1, 3),
+    nthWeekdayKey(year, 2, 1, 3),
+    offsetDateKey(easter, -2),
+    lastWeekdayKey(year, 5, 1),
+    ...(year >= 2022 ? [observedHolidayKey(year, 6, 19)] : []),
+    observedHolidayKey(year, 7, 4),
+    nthWeekdayKey(year, 9, 1, 1),
+    nthWeekdayKey(year, 11, 4, 4),
+    observedHolidayKey(year, 12, 25),
+    observedHolidayKey(year + 1, 1, 1)
+  ].filter((key) => key.startsWith(`${year}-`));
+  const holidays = new Set(holidayKeys);
+  const earlyCloses = {};
+  const thanksgiving = new Date(`${nthWeekdayKey(year, 11, 4, 4)}T12:00:00Z`);
+  earlyCloses[offsetDateKey(thanksgiving, 1)] = [13, 0];
+  for (const date of [new Date(Date.UTC(year, 6, 3, 12)), new Date(Date.UTC(year, 11, 24, 12))]) {
+    const key = utcDateKey(date);
+    if (![0, 6].includes(date.getUTCDay()) && !holidays.has(key)) earlyCloses[key] = [13, 0];
+  }
+  return { holidays, earlyCloses };
+}
+
 function marketDayInfo(definition, parts) {
   const key = localKey(parts);
   const weekday = zonedParts(zonedTimeToUtc(parts.year, parts.month, parts.day, 12, 0, definition.timeZone), definition.timeZone).weekday;
-  const closed = ["Sat", "Sun"].includes(weekday) || (definition.holidays[parts.year] || []).includes(key);
-  const close = definition.earlyCloses[key] || definition.close;
+  const calendar = marketCalendar(definition.code, parts.year);
+  const closed = ["Sat", "Sun"].includes(weekday) || calendar.holidays.has(key);
+  const close = calendar.earlyCloses[key] || definition.close;
   return { key, closed, open: definition.open, close };
 }
 
@@ -318,6 +425,63 @@ const holdingNameMap = {
   WXBT: "Bitcoin ETF"
 };
 
+function announce(message, tone = "success", timeout = 10000) {
+  const notice = el("globalNotice");
+  if (!notice) return;
+  notice.textContent = message;
+  notice.className = `global-notice ${tone}`;
+  window.clearTimeout(announce.timer);
+  announce.timer = window.setTimeout(() => notice.classList.add("hidden"), timeout);
+}
+
+function clearFormError(form) {
+  form?.querySelector(".form-error")?.remove();
+  form?.querySelectorAll("[aria-invalid='true']").forEach((field) => field.removeAttribute("aria-invalid"));
+}
+
+function showFormError(form, message, fieldNames = []) {
+  clearFormError(form);
+  const error = document.createElement("p");
+  error.className = "form-error";
+  error.setAttribute("role", "alert");
+  error.textContent = message;
+  form.prepend(error);
+  const fields = fieldNames.map((name) => form.elements[name]).filter(Boolean);
+  fields.forEach((field) => field.setAttribute("aria-invalid", "true"));
+  fields[0]?.focus();
+  announce(message, "error");
+}
+
+function appConfirm({ title = "Please confirm", message, confirmLabel = "Confirm", tone = "default" }) {
+  const dialog = el("appConfirmDialog");
+  if (!dialog) return Promise.resolve(false);
+  el("confirmDialogTitle").textContent = title;
+  el("confirmDialogMessage").textContent = message;
+  const accept = el("confirmDialogAccept");
+  const cancel = el("confirmDialogCancel");
+  accept.textContent = confirmLabel;
+  accept.classList.toggle("danger", tone === "danger");
+  dialog.classList.toggle("danger", tone === "danger");
+  return new Promise((resolve) => {
+    const finish = (confirmed) => {
+      dialog.classList.add("hidden");
+      document.removeEventListener("keydown", onKeydown);
+      resolve(confirmed);
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Escape") finish(false);
+    };
+    accept.onclick = () => finish(true);
+    cancel.onclick = () => finish(false);
+    dialog.onclick = (event) => {
+      if (event.target === dialog) finish(false);
+    };
+    document.addEventListener("keydown", onKeydown);
+    dialog.classList.remove("hidden");
+    window.setTimeout(() => accept.focus(), 0);
+  });
+}
+
 function displayHoldingName(ticker, holding) {
   if (ticker === "Crypto") return "Crypto (Revolut)";
   const override = holdingNameOverrideFor(ticker);
@@ -374,13 +538,19 @@ function activeRows(rows) {
 
 function latestByKey(rows, keyFn) {
   const grouped = new Map();
-  for (const row of activeRows(rows)) grouped.set(keyFn(row), row);
+  for (const row of activeRows(rows)) {
+    const key = keyFn(row);
+    const current = grouped.get(key);
+    const dateDifference = dateValue(row.date) - dateValue(current?.date);
+    const timeDifference = String(row.created_at || row.updated_at || "").localeCompare(String(current?.created_at || current?.updated_at || ""));
+    if (!current || dateDifference > 0 || (dateDifference === 0 && timeDifference >= 0)) grouped.set(key, row);
+  }
   return [...grouped.values()];
 }
 
 function latestManualValue(ticker, owner, account) {
   const matches = activeRows(state.ledger.manual_values).filter((row) => row.ticker === ticker && row.owner === owner && row.account === account);
-  return matches[matches.length - 1] || null;
+  return latestByKey(matches, () => `${ticker}|${owner}|${account}`)[0] || null;
 }
 
 function latestPensions() {
@@ -389,38 +559,11 @@ function latestPensions() {
 
 function latestManualValueForAccount(account) {
   const matches = activeRows(state.ledger.manual_values).filter((row) => row.account === account);
-  return matches[matches.length - 1] || null;
+  return latestByKey(matches, () => account)[0] || null;
 }
 
 function marketPriceMap() {
   return new Map((state.ledger.market_prices || []).map((row) => [row.ticker, row]));
-}
-
-function transactionDateValue(value) {
-  if (!value) return 0;
-  const raw = String(value).trim();
-  let match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
-  match = raw.match(/^(\d{1,2})[.-](\d{1,2})[.-](\d{2}|\d{4})$/);
-  if (match) {
-    const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
-    return new Date(year, Number(match[2]) - 1, Number(match[1])).getTime();
-  }
-  const parsed = Date.parse(raw);
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function transactionTypeOrder(type) {
-  return { opening: 0, buy: 1, sell: 2, deposit: 3, withdrawal: 4 }[type] ?? 9;
-}
-
-function orderedTransactions(rows) {
-  return [...rows].sort((a, b) =>
-    transactionDateValue(a.date) - transactionDateValue(b.date)
-    || transactionTypeOrder(a.type) - transactionTypeOrder(b.type)
-    || String(a.created_at || "").localeCompare(String(b.created_at || ""))
-    || String(a.id || "").localeCompare(String(b.id || ""))
-  );
 }
 
 function priceIsFresh(row) {
@@ -428,24 +571,48 @@ function priceIsFresh(row) {
   return Date.now() - new Date(row.fetched_at).getTime() < priceStalenessMinutes * 60 * 1000;
 }
 
-function newestEquityPrice(prices) {
-  return [...prices.values()]
-    .filter((row) => row.ticker !== "GBPUSD=X" && row.fetched_at)
-    .sort((a, b) => new Date(b.fetched_at) - new Date(a.fetched_at))[0] || null;
+function requiredMarketTickers() {
+  const tickers = new Set(["GBPUSD=X"]);
+  for (const row of activeRows(state.ledger.transactions || [])) {
+    const ticker = String(row.ticker || "").trim();
+    if (ticker && ticker !== "CASH" && ticker !== "Crypto") tickers.add(ticker);
+  }
+  return [...tickers];
 }
 
-function oldestMarketRefresh(prices) {
-  const rows = [...prices.values()].filter((row) => row.fetched_at);
+function marketDataHealth(portfolio, minutes = priceStalenessMinutes) {
+  const required = requiredMarketTickers();
+  const missing = [];
+  const stale = [];
+  const rows = [];
+  for (const ticker of required) {
+    const row = portfolio.prices.get(ticker);
+    if (!row?.fetched_at) {
+      missing.push(ticker);
+      continue;
+    }
+    rows.push(row);
+    if (Date.now() - new Date(row.fetched_at).getTime() > minutes * 60 * 1000) stale.push(ticker);
+  }
+  return {
+    required,
+    rows,
+    missing,
+    stale,
+    complete: missing.length === 0,
+    fresh: missing.length === 0 && stale.length === 0,
+  };
+}
+
+function oldestMarketRefresh(portfolio, includeFx = true) {
+  const health = marketDataHealth(portfolio, Number.MAX_SAFE_INTEGER);
+  const rows = health.rows.filter((row) => includeFx || row.ticker !== "GBPUSD=X");
   if (!rows.length) return null;
-  return rows.sort((a, b) => new Date(a.fetched_at) - new Date(b.fetched_at))[0];
+  return [...rows].sort((a, b) => new Date(a.fetched_at) - new Date(b.fetched_at))[0];
 }
 
 function marketRefreshIsStale(portfolio, minutes = autoRefreshMinutes) {
-  const equity = newestEquityPrice(portfolio.prices);
-  const fx = portfolio.prices.get("GBPUSD=X");
-  const rows = [equity, fx].filter((row) => row?.fetched_at);
-  if (rows.length < 2) return true;
-  return rows.some((row) => Date.now() - new Date(row.fetched_at).getTime() > minutes * 60 * 1000);
+  return !marketDataHealth(portfolio, minutes).fresh;
 }
 
 function marketRefreshIsOverHour(portfolio) {
@@ -462,11 +629,15 @@ function refreshAgeText(value) {
 }
 
 function marketFreshnessText(portfolio) {
-  const equity = newestEquityPrice(portfolio.prices);
+  const health = marketDataHealth(portfolio);
+  const equity = oldestMarketRefresh(portfolio, false);
   const fx = portfolio.prices.get("GBPUSD=X");
   const equityText = `Equities ${refreshAgeText(equity?.fetched_at)}`;
   const fxText = `FX ${refreshAgeText(fx?.fetched_at)}`;
-  return `${equityText} · ${fxText}`;
+  const issueText = health.missing.length
+    ? ` · ${health.missing.length} missing`
+    : health.stale.length ? ` · ${health.stale.length} stale` : "";
+  return `${equityText} · ${fxText}${issueText}`;
 }
 
 function marketSessionMarkup() {
@@ -497,6 +668,7 @@ function updateMarketDataSummary(portfolio) {
   if (target) {
     target.textContent = state.marketRefreshMessage || marketFreshnessText(portfolio);
     target.classList.toggle("market-ok", state.marketRefreshTone === "success");
+    target.classList.toggle("market-warning", state.marketRefreshTone === "warning");
     target.classList.toggle("market-error", state.marketRefreshTone === "error" || (!state.marketRefreshMessage && marketRefreshIsOverHour(portfolio)));
   }
 }
@@ -555,7 +727,7 @@ function setSaveMessage(area, text, tone = "success") {
 function saveBanner(area) {
   const message = state.saveMessages[area];
   if (!message) return "";
-  return `<div class="save-banner ${message.tone === "error" ? "save-error" : message.tone === "warning" ? "save-warning" : ""}" data-save-area="${area}">${escapeHtml(message.text)}</div>`;
+  return `<div class="save-banner ${message.tone === "error" ? "save-error" : message.tone === "warning" ? "save-warning" : ""}" data-save-area="${area}" role="status" aria-live="polite">${escapeHtml(message.text)}</div>`;
 }
 
 function readTransactionDrafts() {
@@ -635,132 +807,14 @@ function setFormWorking(form, working, label = "Saving...") {
 }
 
 function calculatePortfolio() {
-  const grouped = new Map();
-  const cash = new Map();
-  const prices = marketPriceMap();
-  const fxRow = prices.get("GBPUSD=X");
-  const fx = Number(fxRow?.price || state.ledger.fx || 1.3427);
-
-  for (const tx of orderedTransactions(activeRows(state.ledger.transactions))) {
-    const key = `${tx.owner}|${tx.account}`;
-    const cashValue = cash.get(key) || { owner: tx.owner, account: tx.account, amount: 0 };
-
-    if (tx.type === "deposit") {
-      cashValue.amount += Number(tx.amount_gbp || 0);
-      cash.set(key, cashValue);
-      continue;
-    }
-    if (tx.type === "withdrawal") {
-      cashValue.amount -= Number(tx.amount_gbp || 0);
-      cash.set(key, cashValue);
-      continue;
-    }
-
-    const positionKey = `${tx.owner}|${tx.account}|${tx.ticker}`;
-    const item = grouped.get(positionKey) || {
-      owner: tx.owner,
-      account: tx.account,
-      ticker: tx.ticker,
-      holding: tx.holding || tx.ticker,
-      quantity: 0,
-      cost_basis_gbp: 0,
-      opening_value_gbp: 0
-    };
-    const quantity = Number(tx.quantity || 0);
-    if (tx.type === "opening" || tx.type === "buy") {
-      item.quantity += quantity;
-      const cost = tx.cost_basis_gbp ?? ((quantity * Number(tx.price || 0)) / (tx.currency === "USD" ? fx : 1));
-      const cashCost = tx.amount_gbp ?? cost;
-      item.cost_basis_gbp += Number(cost || 0);
-      if (tx.type === "opening" && tx.opening_value_gbp !== null && tx.opening_value_gbp !== undefined) {
-        item.opening_value_gbp += Number(tx.opening_value_gbp || 0);
-      }
-      if (tx.type === "buy") {
-        cashValue.amount -= Number(cashCost || 0);
-        cash.set(key, cashValue);
-      }
-    } else if (tx.type === "sell") {
-      const avgCost = item.quantity ? item.cost_basis_gbp / item.quantity : 0;
-      const sellQty = Math.min(quantity, item.quantity);
-      item.quantity -= sellQty;
-      item.cost_basis_gbp -= avgCost * sellQty;
-      cashValue.amount += Number(tx.amount_gbp || 0);
-      cash.set(key, cashValue);
-    }
-    grouped.set(positionKey, item);
-  }
-
-  const positions = [];
-  for (const item of grouped.values()) {
-    if (item.quantity <= 0) continue;
-    const manual = latestManualValue(item.ticker, item.owner, item.account);
-    let valueGbp = Number(item.cost_basis_gbp || 0);
-    if (manual) {
-      valueGbp = Number(manual.value_gbp || 0);
-    } else if (prices.has(item.ticker)) {
-      const quote = prices.get(item.ticker);
-      const localValue = Number(quote.price || 0) * Number(item.quantity || 0);
-      valueGbp = quote.currency === "USD" ? localValue / fx : localValue;
-    } else if (item.opening_value_gbp) {
-      valueGbp = Number(item.opening_value_gbp);
-    }
-    const gainGbp = valueGbp - Number(item.cost_basis_gbp || 0);
-    const gainPct = item.cost_basis_gbp ? gainGbp / item.cost_basis_gbp : null;
-    const quote = prices.get(item.ticker);
-    const source = manual ? "Manual" : quote ? (priceIsFresh(quote) ? "Yahoo" : "Cached Yahoo") : item.opening_value_gbp ? "Opening value" : "Cost basis";
-    positions.push({ ...item, value_gbp: valueGbp, gain_gbp: gainGbp, gain_pct: gainPct, source });
-  }
-
-  const combined = aggregatePositions(positions);
-  const totalPositions = positions.reduce((sum, item) => sum + item.value_gbp, 0);
-  const totalCash = [...cash.values()].reduce((sum, item) => sum + item.amount, 0);
-  const pensionTotal = latestPensions().reduce((sum, item) => sum + Number(item.value_gbp || 0), 0);
-  return {
-    fx,
-    positions,
-    combined,
-    cash: [...cash.values()],
-    totalPositions,
-    totalCash,
-    accessibleTotal: totalPositions + totalCash,
-    pensionTotal,
-    netWorthTotal: totalPositions + totalCash + pensionTotal,
-    prices
-  };
-}
-
-function aggregatePositions(positions) {
-  const grouped = new Map();
-  for (const position of positions) {
-    const item = grouped.get(position.ticker) || {
-      ticker: position.ticker,
-      holding: position.holding,
-      quantity: 0,
-      value_gbp: 0,
-      cost_basis_gbp: 0,
-      gain_gbp: 0,
-      sources: new Set(),
-      children: []
-    };
-    item.quantity += Number(position.quantity || 0);
-    item.value_gbp += Number(position.value_gbp || 0);
-    item.cost_basis_gbp += Number(position.cost_basis_gbp || 0);
-    item.gain_gbp += Number(position.gain_gbp || 0);
-    item.sources.add(position.source || "Unknown");
-    item.children.push(position);
-    grouped.set(position.ticker, item);
-  }
-  return [...grouped.values()].map((item) => {
-    const owners = [...new Set(item.children.map((child) => child.owner))];
-    const accounts = [...new Set(item.children.map((child) => child.account))];
-    return {
-      ...item,
-      owner: owners.length > 1 ? "Both" : owners[0],
-      account: accounts.length > 1 ? "Multiple" : accounts[0],
-      source: [...item.sources].includes("Yahoo") ? "Yahoo" : [...item.sources].join(", "),
-      gain_pct: item.cost_basis_gbp ? item.gain_gbp / item.cost_basis_gbp : null
-    };
-  }).sort((a, b) => b.value_gbp - a.value_gbp);
+  return calculatePortfolioCore({
+    transactions: state.ledger.transactions,
+    manualValues: state.ledger.manual_values,
+    pensions: state.ledger.pensions,
+    marketPrices: state.ledger.market_prices,
+    fxFallback: state.ledger.fx || 1.3427,
+    isPriceFresh: priceIsFresh,
+  });
 }
 
 function accountBreakdown(portfolio) {
@@ -883,19 +937,32 @@ async function loadMember() {
   if (!members.error) state.members = members.data || [data];
 }
 
+async function selectAllRows(tableName, { orderBy = null, ascending = true, pageSize = 500 } = {}) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    let query = supabaseClient.from(tableName).select("*").range(from, from + pageSize - 1);
+    if (orderBy) query = query.order(orderBy, { ascending });
+    const result = await query;
+    if (result.error) return { data: null, error: result.error };
+    rows.push(...(result.data || []));
+    if ((result.data || []).length < pageSize) break;
+  }
+  return { data: rows, error: null };
+}
+
 async function loadCloudLedger() {
   const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses, holdingNameOverrides, reportSettings, reportRuns] = await Promise.all([
-    supabaseClient.from("portfolio_transactions").select("*").order("created_at", { ascending: true }),
-    supabaseClient.from("manual_values").select("*").order("created_at", { ascending: true }),
-    supabaseClient.from("pension_values").select("*").order("created_at", { ascending: true }),
+    selectAllRows("portfolio_transactions", { orderBy: "created_at" }),
+    selectAllRows("manual_values", { orderBy: "created_at" }),
+    selectAllRows("pension_values", { orderBy: "created_at" }),
     supabaseClient.from("audit_log").select("*").order("event_time", { ascending: false }).limit(100),
-    supabaseClient.from("market_prices").select("*").order("fetched_at", { ascending: false }),
-    supabaseClient.from("net_worth_snapshots").select("*").order("snapshot_date", { ascending: false }),
-    supabaseClient.from("portfolio_value_snapshots").select("*").order("snapshot_date", { ascending: false }),
-    supabaseClient.from("app_status").select("*"),
-    supabaseClient.from("research_statuses").select("*").order("updated_at", { ascending: false }),
-    supabaseClient.from("holding_name_overrides").select("*").order("updated_at", { ascending: false }),
-    supabaseClient.from("portfolio_report_settings").select("*"),
+    selectAllRows("market_prices", { orderBy: "fetched_at", ascending: false }),
+    selectAllRows("net_worth_snapshots", { orderBy: "snapshot_date", ascending: false }),
+    selectAllRows("portfolio_value_snapshots", { orderBy: "snapshot_date", ascending: false }),
+    selectAllRows("app_status"),
+    selectAllRows("research_statuses", { orderBy: "updated_at", ascending: false }),
+    selectAllRows("holding_name_overrides", { orderBy: "updated_at", ascending: false }),
+    selectAllRows("portfolio_report_settings"),
     supabaseClient.from("portfolio_report_runs").select("*").order("created_at", { ascending: false }).limit(20)
   ]);
   for (const result of [tx, manual, pensions, audit, prices]) {
@@ -950,8 +1017,9 @@ function setupRealtime() {
   if (state.holdingNameOverridesAvailable) realtimeTables.push("holding_name_overrides");
   if (state.reportSettingsAvailable) realtimeTables.push("portfolio_report_settings");
   if (state.reportRunsAvailable) realtimeTables.push("portfolio_report_runs");
-  state.subscriptions = realtimeTables.map((tableName) => {
-    const channel = supabaseClient.channel(`changes:${tableName}`).on(
+  let channel = supabaseClient.channel("portfolio-changes");
+  realtimeTables.forEach((tableName) => {
+    channel = channel.on(
       "postgres_changes",
       { event: "*", schema: "public", table: tableName },
       (payload) => {
@@ -963,9 +1031,10 @@ function setupRealtime() {
           el("refreshCloudButton").textContent = "New data available - refresh";
         }
       }
-    ).subscribe();
-    return channel;
+    );
   });
+  channel.subscribe();
+  state.subscriptions = [channel];
 }
 
 function setupPresence() {
@@ -1141,14 +1210,36 @@ function renderDashboard(portfolio) {
       </div>
       <div class="card"><h2>Sector Exposure</h2><table class="sector-table"><thead><tr><th>Area</th><th>Value</th><th>Weight</th></tr></thead><tbody>${sectorRows}</tbody></table></div>
     </section>
-    <section class="card gain-card performance-card"><h2>Top Gainers</h2><div class="table-shell"><table class="sortable performance-table" data-performance-table><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table></div><button type="button" class="secondary mobile-performance-toggle">View all</button><p class="footnote">Performance is measured since purchase.</p></section>
-    <section class="card loss-card performance-card"><h2>Top Losers</h2><div class="table-shell"><table class="sortable performance-table" data-performance-table><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table></div><button type="button" class="secondary mobile-performance-toggle">View all</button><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></section>
+    <section class="card gain-card performance-card"><h2>Top Gainers</h2>${mobilePerformanceSortTools()}<div class="table-shell"><table class="sortable performance-table" data-performance-table><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(winners, "gain-text")}</tbody></table></div><button type="button" class="secondary mobile-performance-toggle">View all</button><p class="footnote">Performance is measured since purchase.</p></section>
+    <section class="card loss-card performance-card"><h2>Top Losers</h2>${mobilePerformanceSortTools()}<div class="table-shell"><table class="sortable performance-table" data-performance-table><thead><tr><th data-sort="text">Ticker</th><th data-sort="text">Holding</th><th data-sort="number">Value</th><th data-sort="number">% change since purchase</th><th data-sort="number">GBP change since purchase</th></tr></thead><tbody>${performanceRows(losers, "loss-text")}</tbody></table></div><button type="button" class="secondary mobile-performance-toggle">View all</button><p class="footnote">Performance is measured since purchase. Only holdings currently showing a loss are listed.</p></section>
     <section class="card"><details class="history-detail"><summary>Net Worth History</summary>${historyChart}<div class="table-shell"><table class="history-table"><thead><tr><th>Date</th><th>Headline</th><th>Portfolio</th><th>Pension</th><th>1 month</th><th>6 months</th><th>12 months</th></tr></thead><tbody>${historyRows}</tbody></table></div><p class="footnote">${state.ledger.net_worth_snapshots?.length ? `${state.ledger.net_worth_snapshots.length} monthly snapshot saved.` : "No monthly snapshots yet."} The online app saves one snapshot per calendar month on the first signed-in use of that month.</p></details></section>
   `;
   bindRefreshButtons();
   wireSortableTables();
+  wireMobilePerformanceSorts();
   wireMobilePerformanceToggles();
   renderIcons();
+}
+
+function mobilePerformanceSortTools() {
+  return `<div class="mobile-table-tools performance-sort-tools"><label>Sort holdings<select class="mobile-performance-sort"><option value="0">Ticker</option><option value="1">Holding</option><option value="2">Value</option><option value="3">Percentage change</option><option value="4" selected>GBP change</option></select></label><button type="button" class="secondary mobile-performance-direction" aria-label="Reverse sort order"><i data-lucide="arrow-down-up"></i></button></div>`;
+}
+
+function wireMobilePerformanceSorts() {
+  document.querySelectorAll(".performance-card").forEach((card) => {
+    const select = card.querySelector(".mobile-performance-sort");
+    const direction = card.querySelector(".mobile-performance-direction");
+    const table = card.querySelector(".performance-table");
+    if (!select || !direction || !table) return;
+    const sort = () => {
+      const header = table.querySelectorAll("th")[Number(select.value)];
+      sortTableByHeader(header);
+      direction.dataset.direction = header?.dataset.direction || "asc";
+      direction.setAttribute("aria-label", direction.dataset.direction === "asc" ? "Currently ascending. Reverse sort order" : "Currently descending. Reverse sort order");
+    };
+    select.addEventListener("change", sort);
+    direction.addEventListener("click", sort);
+  });
 }
 
 function wireMobilePerformanceToggles() {
@@ -1404,7 +1495,7 @@ function wireMobileHoldingsSort() {
   if (!select || !direction || !table) return;
   const sort = () => {
     const header = table.querySelectorAll("th")[Number(select.value)];
-    header?.click();
+    sortTableByHeader(header);
     direction.dataset.direction = header?.dataset.direction || "asc";
     direction.setAttribute("aria-label", direction.dataset.direction === "asc" ? "Currently ascending. Reverse sort order" : "Currently descending. Reverse sort order");
   };
@@ -1440,7 +1531,7 @@ function wireResearchStatusForms() {
 async function submitResearchStatus(event) {
   event.preventDefault();
   if (!state.researchStatusesAvailable) {
-    alert("Research Status storage is not available yet. Please refresh after the database update has been applied.");
+    announce("Research Status storage is not available. Refresh and try again.", "error");
     return;
   }
   const form = event.currentTarget;
@@ -1469,7 +1560,7 @@ async function submitResearchStatus(event) {
     setSaveMessage("holdings", `${ticker} research status saved at ${shortUkTime()} UK.`);
     renderAll();
   } catch (error) {
-    alert(`Research status save failed: ${error.message}`);
+    announce(`Research status save failed: ${error.message}`, "error");
   } finally {
     setFormWorking(form, false);
   }
@@ -1487,7 +1578,7 @@ function wireHoldingNameForms() {
 async function submitHoldingNameOverride(event) {
   event.preventDefault();
   if (!state.holdingNameOverridesAvailable) {
-    alert("Holding name storage is not available yet. Please refresh after the database update has been applied.");
+    announce("Holding name storage is not available. Refresh and try again.", "error");
     return;
   }
   const form = event.currentTarget;
@@ -1530,7 +1621,7 @@ async function submitHoldingNameOverride(event) {
     setSaveMessage("holdings", `${ticker} display name saved at ${shortUkTime()} UK.`);
     renderAll();
   } catch (error) {
-    alert(`Holding name save failed: ${error.message}`);
+    announce(`Holding name save failed: ${error.message}`, "error");
   } finally {
     setFormWorking(form, false);
   }
@@ -1550,10 +1641,11 @@ async function resetHoldingNameOverride(tickerValue) {
   const { data, error } = await supabaseClient.from("holding_name_overrides")
     .update(patch)
     .eq("ticker", existing.ticker)
+    .eq("version", existing.version)
     .select()
     .single();
   if (error || !data) {
-    alert(`Holding name reset failed: ${error?.message || "No row was updated."}`);
+    announce(`Holding name reset failed: ${error?.message || "No row was updated."}`, "error");
     return;
   }
   await writeAudit("holding_name_reset", "holding_name_overrides", null, existing, data);
@@ -1575,10 +1667,16 @@ async function refreshMarketPrices(options = {}) {
     if (!options.quiet) {
       setMarketRefreshMessage("Refreshing market prices...");
       try {
-        await state.marketRefreshPromise;
+        const data = await state.marketRefreshPromise;
         await loadCloudLedger();
         renderAll();
-        setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}`, "success", 15000);
+        const refreshedPortfolio = calculatePortfolio();
+        const complete = data?.complete === true && marketDataHealth(refreshedPortfolio).complete;
+        setMarketRefreshMessage(
+          `${complete ? "Market prices refreshed" : "Market refresh partly completed"} · ${marketFreshnessText(refreshedPortfolio)}`,
+          complete ? "success" : "warning",
+          15000,
+        );
       } catch (error) {
         setMarketRefreshMessage(`Market refresh failed: ${error.message} · ${marketFreshnessText(calculatePortfolio())}`, "error");
       }
@@ -1600,7 +1698,10 @@ async function refreshMarketPrices(options = {}) {
         "apikey": config.supabaseAnonKey,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ extraTickers: options.extraTickers || [] })
+      body: JSON.stringify({
+        extraTickers: options.extraTickers || [],
+        mode: options.lookupOnly ? "lookup" : "all",
+      })
     }).then(async (response) => {
       const text = await response.text();
       let payload = {};
@@ -1615,25 +1716,32 @@ async function refreshMarketPrices(options = {}) {
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Market refresh is taking too long. Please try again.")), 45000));
     state.marketRefreshPromise = Promise.race([invokePromise, timeoutPromise]);
     const data = await state.marketRefreshPromise;
+    let reloadComplete = true;
     try {
       await Promise.race([
         loadCloudLedger(),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Market data saved, but the app reload took too long.")), 15000))
       ]);
     } catch (reloadError) {
+      reloadComplete = false;
       console.warn("Market data refresh completed but reload was delayed", reloadError);
     }
     const refreshedPortfolio = calculatePortfolio();
-    ensureMonthlySnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Net worth snapshot skipped after market refresh", snapshotError));
-    ensureAccessiblePortfolioSnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Portfolio snapshot skipped after market refresh", snapshotError));
-    const skipped = data?.skipped?.length ? ` ${data.skipped.length} skipped.` : "";
+    const health = marketDataHealth(refreshedPortfolio);
+    const complete = options.lookupOnly ? data?.complete !== false : data?.complete === true && health.complete && reloadComplete;
+    if (!options.lookupOnly && complete) {
+      ensureMonthlySnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Net worth snapshot skipped after market refresh", snapshotError));
+      ensureAccessiblePortfolioSnapshot(refreshedPortfolio).catch((snapshotError) => console.warn("Portfolio snapshot skipped after market refresh", snapshotError));
+    }
+    const skipped = data?.skipped?.length ? ` ${data.skipped.length} price${data.skipped.length === 1 ? "" : "s"} unavailable.` : "";
     if (!options.quiet || options.auto) {
       renderAll();
     }
-    if (!options.quiet) {
-      setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}${skipped}`, "success", 15000);
-    } else if (options.auto) {
-      setMarketRefreshMessage(`Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}${skipped}`, "success", 15000);
+    if (!options.quiet || options.auto) {
+      const message = complete
+        ? `Market prices refreshed · ${marketFreshnessText(calculatePortfolio())}`
+        : `Market refresh partly completed · ${marketFreshnessText(calculatePortfolio())}${skipped}`;
+      setMarketRefreshMessage(message, complete ? "success" : "warning", 15000);
     }
   } catch (error) {
     if (!options.quiet || options.auto) {
@@ -1652,12 +1760,15 @@ function startAutoRefresh(portfolio) {
   if (!isConfigured || !state.session) return;
   if (!state.initialPriceRefreshDone) {
     state.initialPriceRefreshDone = true;
-    window.setTimeout(() => refreshMarketPrices({ auto: true, quiet: true }), 1200);
+    if (marketRefreshIsStale(portfolio)) {
+      window.setTimeout(() => refreshMarketPrices({ auto: true, quiet: true }), 1200);
+    }
   }
   if (state.autoRefreshTimer) return;
   state.autoRefreshTimer = window.setInterval(() => {
     if (document.visibilityState === "visible" && state.session) {
-      refreshMarketPrices({ auto: true, quiet: true });
+      const latest = calculatePortfolio();
+      if (marketRefreshIsStale(latest)) refreshMarketPrices({ auto: true, quiet: true });
     }
   }, autoRefreshMinutes * 60 * 1000);
 }
@@ -1672,53 +1783,56 @@ function renderTransaction(portfolio) {
     ${cashConfirm}
     <section class="transaction-workspace">
       <div class="transaction-tabs" role="tablist" aria-label="Transaction type">
-        <button type="button" role="tab" data-transaction-tab="equity" aria-selected="${activePanel === "equity"}"><i data-lucide="line-chart"></i><span>Equity</span></button>
-        <button type="button" role="tab" data-transaction-tab="cash" aria-selected="${activePanel === "cash"}"><i data-lucide="credit-card"></i><span>Cash</span></button>
-        <button type="button" role="tab" data-transaction-tab="manual" aria-selected="${activePanel === "manual"}"><i data-lucide="edit-3"></i><span>Manual value</span></button>
+        <button id="equityTab" type="button" role="tab" data-transaction-tab="equity" aria-controls="equityPanel" aria-selected="${activePanel === "equity"}" tabindex="${activePanel === "equity" ? 0 : -1}"><i data-lucide="line-chart"></i><span>Equity</span></button>
+        <button id="cashTab" type="button" role="tab" data-transaction-tab="cash" aria-controls="cashPanel" aria-selected="${activePanel === "cash"}" tabindex="${activePanel === "cash" ? 0 : -1}"><i data-lucide="credit-card"></i><span>Cash</span></button>
+        <button id="manualTab" type="button" role="tab" data-transaction-tab="manual" aria-controls="manualPanel" aria-selected="${activePanel === "manual"}" tabindex="${activePanel === "manual" ? 0 : -1}"><i data-lucide="edit-3"></i><span>Manual value</span></button>
       </div>
-      <div class="card transaction-panel ${activePanel === "equity" ? "active" : ""}" data-transaction-panel="equity" role="tabpanel">
+      <div id="equityPanel" class="card transaction-panel ${activePanel === "equity" ? "active" : ""}" data-transaction-panel="equity" role="tabpanel" aria-labelledby="equityTab">
         <h2>Buy / Sell Equity</h2>
         ${saveBanner("equity")}
         <form id="equityForm">
-          <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
-          <label>Owner</label>${ownerSelect(disabled)}
-          <label>Account</label><select name="account" required ${disabled}></select>
-          <label>Action</label><select name="type" ${disabled}><option value="buy">Buy</option><option value="sell">Sell</option></select>
-          <label>Ticker</label><input name="ticker" class="ticker-input" required ${disabled}><div class="lookup-status"></div>
-          <label>Holding name</label><input name="holding" required ${disabled}>
-          <label>Quantity of shares</label><input name="quantity" type="number" step="any" required ${disabled}>
-          <label>Price per share</label><input name="price" type="number" step="any" required ${disabled}>
-          <label>Currency</label><select name="currency" ${disabled}><option>USD</option><option>GBP</option></select>
-          <label>Notes</label><textarea name="notes" ${disabled}></textarea>
+          <input name="client_request_id" type="hidden" value="${uid()}">
+          <label for="equityDate">Date</label><input id="equityDate" name="date" type="date" value="${todayIso()}" required ${disabled}>
+          <label for="equityOwner">Owner</label>${ownerSelect(disabled, "equityOwner")}
+          <label for="equityAccount">Account</label><select id="equityAccount" name="account" required ${disabled}></select>
+          <label for="equityType">Action</label><select id="equityType" name="type" ${disabled}><option value="buy">Buy</option><option value="sell">Sell</option></select>
+          <label for="equityTicker">Ticker</label><input id="equityTicker" name="ticker" class="ticker-input" required ${disabled}><div class="lookup-status" role="status" aria-live="polite"></div>
+          <label for="equityHolding">Holding name</label><input id="equityHolding" name="holding" required ${disabled}>
+          <label for="equityQuantity">Quantity of shares</label><input id="equityQuantity" name="quantity" type="number" min="0.00000001" step="any" inputmode="decimal" required ${disabled}>
+          <label for="equityPrice">Price per share</label><input id="equityPrice" name="price" type="number" min="0.00000001" step="any" inputmode="decimal" required ${disabled}>
+          <label for="equityCurrency">Currency</label><select id="equityCurrency" name="currency" ${disabled}><option>USD</option><option>GBP</option></select>
+          <label for="equityNotes">Notes</label><textarea id="equityNotes" name="notes" ${disabled}></textarea>
           <div class="transaction-total">Total transaction value: <strong>-</strong></div>
           <button ${disabled}>Add equity transaction</button>
         </form>
       </div>
-      <div class="card transaction-panel ${activePanel === "cash" ? "active" : ""}" data-transaction-panel="cash" role="tabpanel">
+      <div id="cashPanel" class="card transaction-panel ${activePanel === "cash" ? "active" : ""}" data-transaction-panel="cash" role="tabpanel" aria-labelledby="cashTab">
         <h2>Cash Deposit / Withdrawal</h2>
         ${saveBanner("cash")}
         <form id="cashForm">
-          <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
-          <label>Owner</label>${ownerSelect(disabled)}
-          <label>Account</label><select name="account" required ${disabled}></select>
-          <label>Action</label><select name="type" ${disabled}><option value="deposit">Deposit cash</option><option value="withdrawal">Withdraw cash</option></select>
-          <label>Cash amount</label><input name="amount" type="number" step="any" required ${disabled}>
-          <label>Currency</label><select name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
-          <label>Notes</label><textarea name="notes" ${disabled}></textarea>
+          <input name="client_request_id" type="hidden" value="${uid()}">
+          <label for="cashDate">Date</label><input id="cashDate" name="date" type="date" value="${todayIso()}" required ${disabled}>
+          <label for="cashOwner">Owner</label>${ownerSelect(disabled, "cashOwner")}
+          <label for="cashAccount">Account</label><select id="cashAccount" name="account" required ${disabled}></select>
+          <label for="cashType">Action</label><select id="cashType" name="type" ${disabled}><option value="deposit">Deposit cash</option><option value="withdrawal">Withdraw cash</option></select>
+          <label for="cashAmount">Cash amount</label><input id="cashAmount" name="amount" type="number" min="0.01" step="any" inputmode="decimal" required ${disabled}>
+          <label for="cashCurrency">Currency</label><select id="cashCurrency" name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
+          <label for="cashNotes">Notes</label><textarea id="cashNotes" name="notes" ${disabled}></textarea>
           <div class="transaction-total">Transaction preview: <strong>-</strong></div>
           <button ${disabled}>Add cash transaction</button>
         </form>
       </div>
-      <div class="card transaction-panel ${activePanel === "manual" ? "active" : ""}" data-transaction-panel="manual" role="tabpanel">
+      <div id="manualPanel" class="card transaction-panel ${activePanel === "manual" ? "active" : ""}" data-transaction-panel="manual" role="tabpanel" aria-labelledby="manualTab">
         <h2>Manual Updates</h2>
         ${saveBanner("manual")}
         <form id="manualForm">
-          <label>Date</label><input name="date" type="date" value="${todayIso()}" required ${disabled}>
-          <label>Type</label><select name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
-          <label>Account / pension name</label><select name="account" ${disabled}></select>
+          <input name="client_request_id" type="hidden" value="${uid()}">
+          <label for="manualDate">Date</label><input id="manualDate" name="date" type="date" value="${todayIso()}" required ${disabled}>
+          <label for="manualKind">Type</label><select id="manualKind" name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
+          <label for="manualAccount">Account / pension name</label><select id="manualAccount" name="account" ${disabled}></select>
           <div class="transaction-total">Current value: <strong id="manualCurrent">-</strong> | Difference: <strong id="manualDifference" class="neutral-text">-</strong></div>
-          <label>Currency</label><select name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
-          <label>New Value</label><input name="value" type="number" step="any" required ${disabled}>
+          <label for="manualCurrency">Currency</label><select id="manualCurrency" name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
+          <label for="manualValue">New value</label><input id="manualValue" name="value" type="number" min="0.01" step="any" inputmode="decimal" required ${disabled}>
           <button ${disabled}>Save manual value</button>
         </form>
       </div>
@@ -1732,11 +1846,24 @@ function renderTransaction(portfolio) {
 function wireTransactionTabs() {
   const tabs = [...document.querySelectorAll("[data-transaction-tab]")];
   const panels = [...document.querySelectorAll("[data-transaction-panel]")];
-  tabs.forEach((tab) => tab.addEventListener("click", () => {
+  const activate = (tab) => {
     state.activeTransactionPanel = tab.dataset.transactionTab;
-    tabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+    tabs.forEach((item) => {
+      item.setAttribute("aria-selected", String(item === tab));
+      item.tabIndex = item === tab ? 0 : -1;
+    });
     panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.transactionPanel === state.activeTransactionPanel));
-  }));
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => activate(tab));
+    tab.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      activate(tabs[nextIndex]);
+      tabs[nextIndex].focus();
+    });
+  });
 }
 
 function renderCashConfirm(portfolio) {
@@ -1746,14 +1873,14 @@ function renderCashConfirm(portfolio) {
     <h2>Confirm Account Cash</h2>
     <p class="subtle">Can you confirm the remaining cash balance in ${escapeHtml(pending.account)}? The app currently calculates ${money(current)}.</p>
     <form id="cashConfirmForm">
-      <label>Remaining cash balance GBP</label><input name="cash_balance_gbp" type="number" step="any" required>
+      <label for="confirmedCashBalance">Remaining cash balance GBP</label><input id="confirmedCashBalance" name="cash_balance_gbp" type="number" min="0" step="any" inputmode="decimal" required>
       <div class="confirm-actions"><button>Confirm cash balance</button><button type="button" id="cashConfirmDisregard" class="secondary">Disregard</button></div>
     </form>
   </section>`;
 }
 
-function ownerSelect(disabled) {
-  return `<select name="owner" required ${disabled}>${displayNames.map((name) => `<option>${name}</option>`).join("")}</select>`;
+function ownerSelect(disabled, id) {
+  return `<select id="${id}" name="owner" required ${disabled}>${displayNames.map((name) => `<option>${name}</option>`).join("")}</select>`;
 }
 
 function wireAccountFilter(form) {
@@ -1814,7 +1941,7 @@ function wireTickerLookup(form, portfolio) {
     status.className = quote ? "lookup-status ok" : "lookup-status warn";
     if (!quote && supabaseClient && state.session) {
       status.textContent = `${name} · looking up price...`;
-      await refreshMarketPrices({ extraTickers: [ticker], quiet: true });
+      await refreshMarketPrices({ extraTickers: [ticker], lookupOnly: true, quiet: true });
       const refreshedPortfolio = calculatePortfolio();
       const refreshedQuote = refreshedPortfolio.prices.get(ticker);
       status.textContent = refreshedQuote
@@ -1886,6 +2013,15 @@ function setupManualForm(form, portfolio) {
   update();
 }
 
+async function confirmBackdatedUsdFx(data, fxRate) {
+  if (data.currency !== "USD" || !data.date || data.date >= todayIso()) return true;
+  return appConfirm({
+    title: "Check the exchange rate",
+    message: `This is a backdated US dollar entry. Its GBP value will use the current rate of £1 = $${Number(fxRate).toFixed(4)}, which may differ from the rate on ${displayDate(data.date)}.`,
+    confirmLabel: "Use current rate",
+  });
+}
+
 async function submitEquity(event, portfolio) {
   event.preventDefault();
   state.activeTransactionPanel = "equity";
@@ -1894,7 +2030,9 @@ async function submitEquity(event, portfolio) {
   const form = event.currentTarget;
   setFormWorking(form, true);
   try {
+    clearFormError(form);
     const data = Object.fromEntries(new FormData(form).entries());
+    if (!(await confirmBackdatedUsdFx(data, portfolio.fx))) return;
     const local = Number(data.quantity) * Number(data.price);
     const amountGbp = data.currency === "USD" ? local / portfolio.fx : local;
     const row = {
@@ -1907,14 +2045,27 @@ async function submitEquity(event, portfolio) {
       quantity: Number(data.quantity),
       price: Number(data.price),
       currency: data.currency,
+      fx_rate_used: data.currency === "USD" ? portfolio.fx : null,
       amount_gbp: amountGbp,
       cost_basis_gbp: null,
       notes: data.notes || "",
       fees_gbp: 0,
       is_locked: false,
+      client_request_id: data.client_request_id,
       created_by: state.session.user.id,
       updated_by: state.session.user.id
     };
+    const errors = validateTransactionInput(row);
+    if (row.type === "sell") {
+      const available = availableQuantityForSale(state.ledger.transactions, row);
+      if (row.quantity > available + 1e-8) {
+        errors.push(`Only ${available.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${row.ticker} shares are available in this account.`);
+      }
+    }
+    if (errors.length) {
+      showFormError(form, errors[0], [errors[0].startsWith("Quantity") || errors[0].startsWith("Only") ? "quantity" : errors[0].startsWith("Price") ? "price" : "ticker"]);
+      return;
+    }
     await insertRow("portfolio_transactions", row, "add");
     setSaveMessage("equity", `${data.type === "buy" ? "Buy" : "Sell"} saved: ${row.ticker} ${money(amountGbp)} at ${shortUkTime()} UK.`);
     state.pendingCashConfirm = { owner: data.owner, account: data.account };
@@ -1935,9 +2086,16 @@ async function submitCashConfirmation(event, portfolio) {
   event.preventDefault();
   if (!state.pendingCashConfirm) return;
   const form = event.currentTarget;
+  clearFormError(form);
   const target = Number(new FormData(form).get("cash_balance_gbp") || 0);
+  if (!Number.isFinite(target) || target < 0) {
+    showFormError(form, "Remaining cash balance cannot be negative.", ["cash_balance_gbp"]);
+    return;
+  }
   const pending = state.pendingCashConfirm;
-  const current = portfolio.cash.find((item) => item.owner === pending.owner && item.account === pending.account)?.amount || 0;
+  await loadCloudLedger();
+  const latestPortfolio = calculatePortfolio();
+  const current = latestPortfolio.cash.find((item) => item.owner === pending.owner && item.account === pending.account)?.amount || 0;
   const adjustment = target - current;
   if (Math.abs(adjustment) > 0.005) {
     await insertRow("portfolio_transactions", {
@@ -1950,11 +2108,13 @@ async function submitCashConfirmation(event, portfolio) {
       quantity: 0,
       price: 0,
       currency: "GBP",
+      fx_rate_used: null,
       amount_gbp: Math.abs(adjustment),
       cost_basis_gbp: null,
       fees_gbp: 0,
       notes: "Cash balance confirmation adjustment",
       is_locked: false,
+      client_request_id: uid(),
       created_by: state.session.user.id,
       updated_by: state.session.user.id
     }, "cash_reconcile");
@@ -1973,7 +2133,9 @@ async function submitCash(event, portfolio) {
   const form = event.currentTarget;
   setFormWorking(form, true);
   try {
+    clearFormError(form);
     const data = Object.fromEntries(new FormData(form).entries());
+    if (!(await confirmBackdatedUsdFx(data, portfolio.fx))) return;
     const amountGbp = data.currency === "USD" ? Number(data.amount) / portfolio.fx : Number(data.amount);
     const row = {
       date: data.date,
@@ -1985,14 +2147,21 @@ async function submitCash(event, portfolio) {
       quantity: 0,
       price: 0,
       currency: data.currency,
+      fx_rate_used: data.currency === "USD" ? portfolio.fx : null,
       amount_gbp: amountGbp,
       cost_basis_gbp: null,
       fees_gbp: 0,
       notes: data.notes || "",
       is_locked: false,
+      client_request_id: data.client_request_id,
       created_by: state.session.user.id,
       updated_by: state.session.user.id
     };
+    const errors = validateTransactionInput(row);
+    if (errors.length) {
+      showFormError(form, errors[0], ["amount"]);
+      return;
+    }
     await insertRow("portfolio_transactions", row, "add");
     setSaveMessage("cash", `${data.type === "deposit" ? "Cash deposit" : "Cash withdrawal"} saved: ${money(amountGbp)} to ${data.account} at ${shortUkTime()} UK.`);
     form.reset();
@@ -2016,15 +2185,24 @@ async function submitManual(event, portfolio) {
   const form = event.currentTarget;
   setFormWorking(form, true);
   try {
+    clearFormError(form);
     const data = Object.fromEntries(new FormData(form).entries());
     const entered = Number(data.value);
+    if (!Number.isFinite(entered) || entered <= 0) {
+      showFormError(form, "New value must be greater than zero.", ["value"]);
+      return;
+    }
     const valueGbp = data.currency === "USD" ? entered / portfolio.fx : entered;
     const currentGbp = data.kind === "crypto"
       ? Number(latestManualValueForAccount(data.account)?.value_gbp || 0)
       : Number(latestPensions().find((row) => row.name === data.account)?.value_gbp || 0);
     const differenceGbp = valueGbp - currentGbp;
     if (currentGbp && Math.abs(valueGbp - currentGbp) / currentGbp > 0.10) {
-      const ok = confirm(`Just be aware this manual value changes by more than 10%. Current value is ${money(currentGbp)}. Save anyway?`);
+      const ok = await appConfirm({
+        title: "Check the new value",
+        message: `This changes the current value by more than 10%. Current value is ${money(currentGbp)} and the proposed value is ${money(valueGbp)}.`,
+        confirmLabel: "Save value",
+      });
       if (!ok) return;
     }
     if (data.kind === "crypto") {
@@ -2038,6 +2216,7 @@ async function submitManual(event, portfolio) {
         currency_entered: data.currency,
         value_entered: entered,
         notes: "Manual value entered in web app",
+        client_request_id: data.client_request_id,
         created_by: state.session.user.id,
         updated_by: state.session.user.id
       }, "manual_update");
@@ -2047,6 +2226,7 @@ async function submitManual(event, portfolio) {
         name: data.account,
         value_gbp: valueGbp,
         cost_gbp: latestPensions().find((row) => row.name === data.account)?.cost_gbp || null,
+        client_request_id: data.client_request_id,
         created_by: state.session.user.id,
         updated_by: state.session.user.id
       }, "manual_update");
@@ -2067,15 +2247,20 @@ async function submitManual(event, portfolio) {
 
 async function insertRow(tableName, row, action) {
   const { data, error } = await supabaseClient.from(tableName).insert(row).select().single();
+  if (error && row.client_request_id) {
+    const existing = await supabaseClient.from(tableName).select("*").eq("client_request_id", row.client_request_id).maybeSingle();
+    if (!existing.error && existing.data) return existing.data;
+  }
   if (error) throw error;
   await writeAudit(action, tableName, data.id, null, data);
+  return data;
 }
 
 async function updateRowWithVersion(tableName, row, patch, action) {
   const next = { ...patch, version: Number(row.version || 1) + 1, updated_by: state.session.user.id, updated_at: new Date().toISOString() };
   const { data, error } = await supabaseClient.from(tableName).update(next).eq("id", row.id).eq("version", row.version).select().single();
   if (error || !data) {
-    alert(error?.message || "This entry changed after you opened it. Please refresh and review before saving.");
+    announce(error?.message || "This entry changed after you opened it. Refresh and review it before saving.", "error");
     return null;
   }
   await writeAudit(action, tableName, row.id, row, data);
@@ -2090,9 +2275,9 @@ async function softDeleteRow(tableName, row, action) {
     updated_by: state.session.user.id,
     updated_at: new Date().toISOString()
   };
-  const { data, error } = await supabaseClient.from(tableName).update(patch).eq("id", row.id).select().single();
+  const { data, error } = await supabaseClient.from(tableName).update(patch).eq("id", row.id).eq("version", row.version).select().maybeSingle();
   if (error || !data) {
-    alert(`Delete failed: ${error?.message || "No row was updated."}`);
+    announce(`Delete failed: ${error?.message || "This entry changed after it was opened. Refresh and try again."}`, "error");
     return null;
   }
   await writeAudit(action, tableName, row.id, row, data);
@@ -2102,7 +2287,13 @@ async function softDeleteRow(tableName, row, action) {
 async function softDeleteTransaction(id, trigger) {
   const row = state.ledger.transactions.find((item) => item.id === id);
   if (!row || row.is_locked) return;
-  if (!confirm("Are you sure you want to delete this ledger entry?")) return;
+  const confirmed = await appConfirm({
+    title: "Delete ledger entry?",
+    message: `${row.type} ${row.ticker} for ${money(row.amount_gbp)} will be removed from the active portfolio.`,
+    confirmLabel: "Delete entry",
+    tone: "danger",
+  });
+  if (!confirmed) return;
   if (trigger) {
     trigger.disabled = true;
     trigger.textContent = "Deleting...";
@@ -2139,19 +2330,53 @@ async function redoLatestTransaction() {
   renderAll();
 }
 
-function downloadLedgerBackup() {
-  const data = JSON.stringify(state.ledger, null, 2);
-  const blob = new Blob([data], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `portfolio-ledger-backup-${todayIso()}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+async function downloadPortfolioExport() {
+  const button = el("downloadLedgerButton");
+  if (button) {
+    button.disabled = true;
+    button.querySelector("span").textContent = "Preparing export...";
+  }
+  try {
+    const tableNames = [
+      "portfolio_transactions", "manual_values", "pension_values", "market_prices",
+      "net_worth_snapshots", "portfolio_value_snapshots", "app_status", "research_statuses",
+      "holding_name_overrides", "portfolio_report_settings", "portfolio_report_snapshots",
+      "portfolio_report_holding_snapshots", "portfolio_report_runs", "audit_log",
+    ];
+    const results = await Promise.all(tableNames.map((table) => selectAllRows(table)));
+    const failed = results.find((result) => result.error);
+    if (failed) throw failed.error;
+    const tables = Object.fromEntries(tableNames.map((table, index) => [table, results[index].data || []]));
+    const payload = {
+      format: "benji-angie-portfolio-export",
+      format_version: 2,
+      app_version: APP_VERSION,
+      exported_at: new Date().toISOString(),
+      table_counts: Object.fromEntries(Object.entries(tables).map(([table, rows]) => [table, rows.length])),
+      tables,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `portfolio-export-${todayIso()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    announce("Complete portfolio export downloaded.");
+  } catch (error) {
+    announce(`Portfolio export failed: ${error.message}`, "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.querySelector("span").textContent = "Download portfolio export";
+    }
+  }
 }
 
 async function writeAudit(action, tableName, recordId, oldValue, newValue) {
-  await supabaseClient.from("audit_log").insert({
+  const serverAuditedTables = new Set(["portfolio_transactions", "manual_values", "pension_values", "research_statuses", "holding_name_overrides"]);
+  if (serverAuditedTables.has(tableName)) return;
+  const { error } = await supabaseClient.from("audit_log").insert({
     user_id: state.session.user.id,
     display_name: currentUserName(),
     action,
@@ -2160,6 +2385,7 @@ async function writeAudit(action, tableName, recordId, oldValue, newValue) {
     old_value: oldValue,
     new_value: newValue
   });
+  if (error) throw error;
 }
 
 function renderLedger() {
@@ -2223,8 +2449,8 @@ function renderLedger() {
       <div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${olderRows}</tbody></table></div>
     </details>
   ` : "";
-  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small"><i data-lucide="download"></i><span>Download ledger backup</span></button><span class="backup-status">${escapeHtml(backupText)}</span></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
-  el("downloadLedgerButton")?.addEventListener("click", downloadLedgerBackup);
+  el("ledgerView").innerHTML = `${editCard}<section class="card"><h2>Ledger</h2>${saveBanner("ledger")}<p class="subtle">Opening balances are locked to protect the imported baseline. New transactions can be edited or deleted here.</p><div class="button-row ledger-backup-row"><button id="downloadLedgerButton" class="secondary small"><i data-lucide="download"></i><span>Download portfolio export</span></button><span class="backup-status">${escapeHtml(backupText)}</span></div><div class="table-shell"><table class="ledger-table"><thead><tr><th>Date</th><th>Timestamp</th><th>Entered by</th><th>Type</th><th>Owner</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Price</th><th>Currency</th><th>Amount GBP</th><th>Actions</th></tr></thead><tbody>${visibleRows}</tbody></table></div>${olderLedger}</section>`;
+  el("downloadLedgerButton")?.addEventListener("click", downloadPortfolioExport);
   el("ledgerView").querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => {
     state.editingTransaction = state.ledger.transactions.find((item) => item.id === button.dataset.edit);
     renderLedger();
@@ -2248,17 +2474,17 @@ function renderEditTransactionCard(tx) {
       <form id="editTransactionForm">
         <input type="hidden" name="id" value="${escapeHtml(tx.id)}">
         <input type="hidden" name="version" value="${escapeHtml(tx.version)}">
-        <label>Date</label><input name="date" type="date" value="${escapeHtml(tx.date)}" required>
-        <label>Owner</label><select name="owner">${displayNames.map((name) => `<option ${name === tx.owner ? "selected" : ""}>${name}</option>`).join("")}</select>
-        <label>Account</label><input name="account" value="${escapeHtml(tx.account)}" required>
-        <label>Type</label><select name="type">${["buy", "sell", "deposit", "withdrawal"].map((type) => `<option value="${type}" ${type === tx.type ? "selected" : ""}>${type}</option>`).join("")}</select>
-        <label>Ticker</label><input name="ticker" value="${escapeHtml(tx.ticker)}" required>
-        <label>Holding</label><input name="holding" value="${escapeHtml(tx.holding)}" required>
-        <label>Quantity</label><input name="quantity" type="number" step="any" value="${isCash ? 0 : escapeHtml(tx.quantity)}">
-        <label>Price</label><input name="price" type="number" step="any" value="${isCash ? 0 : escapeHtml(tx.price)}">
-        <label>Amount GBP</label><input name="amount_gbp" type="number" step="any" value="${escapeHtml(tx.amount_gbp || 0)}">
-        <label>Currency</label><select name="currency"><option ${tx.currency === "GBP" ? "selected" : ""}>GBP</option><option ${tx.currency === "USD" ? "selected" : ""}>USD</option></select>
-        <label>Notes</label><textarea name="notes">${escapeHtml(tx.notes || "")}</textarea>
+        <label for="editDate">Date</label><input id="editDate" name="date" type="date" value="${escapeHtml(tx.date)}" required>
+        <label for="editOwner">Owner</label><select id="editOwner" name="owner">${displayNames.map((name) => `<option ${name === tx.owner ? "selected" : ""}>${name}</option>`).join("")}</select>
+        <label for="editAccount">Account</label><input id="editAccount" name="account" value="${escapeHtml(tx.account)}" required>
+        <label for="editType">Type</label><select id="editType" name="type">${["buy", "sell", "deposit", "withdrawal"].map((type) => `<option value="${type}" ${type === tx.type ? "selected" : ""}>${type}</option>`).join("")}</select>
+        <label for="editTicker">Ticker</label><input id="editTicker" name="ticker" value="${escapeHtml(tx.ticker)}" required>
+        <label for="editHolding">Holding</label><input id="editHolding" name="holding" value="${escapeHtml(tx.holding)}" required>
+        <label for="editQuantity">Quantity</label><input id="editQuantity" name="quantity" type="number" min="0" step="any" inputmode="decimal" value="${isCash ? 0 : escapeHtml(tx.quantity)}">
+        <label for="editPrice">Price</label><input id="editPrice" name="price" type="number" min="0" step="any" inputmode="decimal" value="${isCash ? 0 : escapeHtml(tx.price)}">
+        <label for="editAmount">Amount GBP</label><input id="editAmount" name="amount_gbp" type="number" min="0.01" step="any" inputmode="decimal" value="${escapeHtml(tx.amount_gbp || 0)}">
+        <label for="editCurrency">Currency</label><select id="editCurrency" name="currency"><option ${tx.currency === "GBP" ? "selected" : ""}>GBP</option><option ${tx.currency === "USD" ? "selected" : ""}>USD</option></select>
+        <label for="editNotes">Notes</label><textarea id="editNotes" name="notes">${escapeHtml(tx.notes || "")}</textarea>
         <div class="button-row"><button>Save ledger entry</button><button type="button" id="cancelEditButton" class="secondary">Cancel</button></div>
       </form>
       <p class="footnote">If this entry has been changed by the other user since you opened it, the save will be rejected and you will be asked to refresh.</p>
@@ -2272,6 +2498,7 @@ async function submitTransactionEdit(event) {
   if (state.busyForms.ledgerEdit) return;
   state.busyForms.ledgerEdit = true;
   setFormWorking(form, true);
+  clearFormError(form);
   const data = Object.fromEntries(new FormData(form).entries());
   const row = state.ledger.transactions.find((item) => item.id === data.id);
   if (!row) {
@@ -2283,18 +2510,6 @@ async function submitTransactionEdit(event) {
   const nextAmount = Number(data.amount_gbp || 0);
   const nextQuantity = Number(data.quantity || 0);
   const nextPrice = Number(data.price || 0);
-  if ((nextType === "deposit" || nextType === "withdrawal") && nextAmount <= 0) {
-    alert("Cash transactions need an amount greater than zero.");
-    state.busyForms.ledgerEdit = false;
-    setFormWorking(form, false);
-    return;
-  }
-  if ((nextType === "buy" || nextType === "sell") && (nextQuantity <= 0 || nextPrice <= 0 || nextAmount <= 0)) {
-    alert("Equity transactions need quantity, price and amount greater than zero.");
-    state.busyForms.ledgerEdit = false;
-    setFormWorking(form, false);
-    return;
-  }
   const patch = {
     date: data.date,
     owner: data.owner,
@@ -2309,6 +2524,17 @@ async function submitTransactionEdit(event) {
     currency: data.currency,
     notes: data.notes || ""
   };
+  const errors = validateTransactionInput(patch);
+  if (nextType === "sell") {
+    const available = availableQuantityForSale(state.ledger.transactions, { ...row, ...patch });
+    if (nextQuantity > available + 1e-8) errors.push(`Only ${available.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares are available before this sale.`);
+  }
+  if (errors.length) {
+    showFormError(form, errors[0], [nextType === "sell" || errors[0].startsWith("Quantity") ? "quantity" : nextType === "buy" ? "price" : "amount_gbp"]);
+    state.busyForms.ledgerEdit = false;
+    setFormWorking(form, false);
+    return;
+  }
   const saved = await updateRowWithVersion("portfolio_transactions", row, patch, "edit");
   if (saved) {
     state.editingTransaction = null;
@@ -2623,33 +2849,54 @@ function showView(view) {
 
 function wireSortableTables() {
   document.querySelectorAll("table.sortable th[data-sort]").forEach((th) => {
-    th.onclick = () => {
-      const table = th.closest("table");
-      const tbody = table.querySelector("tbody");
-      const columnIndex = th.cellIndex;
-      const rows = [...tbody.querySelectorAll("tr.holding-main-row, tr:not(.details-row):not(.holding-main-row)")].filter((row) => !row.classList.contains("details-row") && !row.classList.contains("total-row"));
-      const totalRows = [...tbody.querySelectorAll("tr.total-row")];
-      const detailRows = new Map([...tbody.querySelectorAll("tr.details-row")].map((row) => [row.dataset.parent, row]));
-      const type = th.dataset.sort;
-      const direction = th.dataset.direction === "asc" ? "desc" : "asc";
-      table.querySelectorAll("th").forEach((header) => delete header.dataset.direction);
-      th.dataset.direction = direction;
-      rows.sort((a, b) => {
-        const left = a.children[columnIndex]?.dataset.sortValue || a.children[columnIndex]?.innerText || "";
-        const right = b.children[columnIndex]?.dataset.sortValue || b.children[columnIndex]?.innerText || "";
-        const leftValue = type === "number" ? Number(left.replace(/[^0-9.-]/g, "")) : left.toLowerCase();
-        const rightValue = type === "number" ? Number(right.replace(/[^0-9.-]/g, "")) : right.toLowerCase();
-        if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
-        if (leftValue > rightValue) return direction === "asc" ? 1 : -1;
-        return 0;
-      });
-      rows.forEach((row) => {
-        tbody.appendChild(row);
-        if (row.dataset.key && detailRows.has(row.dataset.key)) tbody.appendChild(detailRows.get(row.dataset.key));
-      });
-      totalRows.forEach((row) => tbody.appendChild(row));
-    };
+    if (th.querySelector(".table-sort-control")) return;
+    const label = th.textContent.trim();
+    th.textContent = "";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "table-sort-control";
+    button.innerHTML = `<span>${escapeHtml(label)}</span>`;
+    button.setAttribute("aria-label", `Sort by ${label}`);
+    button.addEventListener("click", () => sortTableByHeader(th));
+    th.appendChild(button);
   });
+}
+
+function sortTableByHeader(th) {
+  const table = th?.closest("table");
+  const tbody = table?.querySelector("tbody");
+  if (!table || !tbody) return;
+  const columnIndex = th.cellIndex;
+  const rows = [...tbody.querySelectorAll("tr.holding-main-row, tr:not(.details-row):not(.holding-main-row)")]
+    .filter((row) => !row.classList.contains("details-row") && !row.classList.contains("total-row"));
+  const totalRows = [...tbody.querySelectorAll("tr.total-row")];
+  const detailRows = new Map([...tbody.querySelectorAll("tr.details-row")].map((row) => [row.dataset.parent, row]));
+  const type = th.dataset.sort;
+  const direction = th.dataset.direction === "asc" ? "desc" : "asc";
+  table.querySelectorAll("th[data-sort]").forEach((header) => {
+    delete header.dataset.direction;
+    header.removeAttribute("aria-sort");
+    const icon = header.querySelector(".table-sort-control i");
+    if (icon) icon.textContent = "↕";
+  });
+  th.dataset.direction = direction;
+  th.setAttribute("aria-sort", direction === "asc" ? "ascending" : "descending");
+  const activeIcon = th.querySelector(".table-sort-control i");
+  if (activeIcon) activeIcon.textContent = direction === "asc" ? "↑" : "↓";
+  rows.sort((a, b) => {
+    const left = a.children[columnIndex]?.dataset.sortValue || a.children[columnIndex]?.innerText || "";
+    const right = b.children[columnIndex]?.dataset.sortValue || b.children[columnIndex]?.innerText || "";
+    const leftValue = type === "number" ? Number(left.replace(/[^0-9.-]/g, "")) : left.toLowerCase();
+    const rightValue = type === "number" ? Number(right.replace(/[^0-9.-]/g, "")) : right.toLowerCase();
+    if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
+    if (leftValue > rightValue) return direction === "asc" ? 1 : -1;
+    return 0;
+  });
+  rows.forEach((row) => {
+    tbody.appendChild(row);
+    if (row.dataset.key && detailRows.has(row.dataset.key)) tbody.appendChild(detailRows.get(row.dataset.key));
+  });
+  totalRows.forEach((row) => tbody.appendChild(row));
 }
 
 function bindAuth() {

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Secure Access</title>
   <link rel="icon" href="favicon.svg?v=2026-06-03-portfolio-icon-1" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=2026-08-18-ux-polish-1">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <link rel="stylesheet" href="styles.css?v=2026-08-19-reliability-1">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.js"></script>
   <script src="https://unpkg.com/lucide@1.28.0/dist/umd/lucide.js"></script>
   <script src="config.js?v=2026-06-03-live-test-fixes-5"></script>
 </head>
@@ -52,15 +52,15 @@
     <section id="authCard" class="card auth-card hidden">
       <h2>Sign In</h2>
       <p class="subtle">Enter your email and password to continue.</p>
-      <label>Email</label>
+      <label for="emailInput">Email</label>
       <input id="emailInput" type="email" autocomplete="email">
-      <label>Password</label>
+      <label for="passwordInput">Password</label>
       <input id="passwordInput" type="password" autocomplete="current-password">
       <div class="button-row">
         <button id="signInButton">Sign in</button>
         <button id="magicLinkButton" class="secondary">Send magic link</button>
       </div>
-      <p id="authMessage" class="message"></p>
+      <p id="authMessage" class="message" role="status" aria-live="polite"></p>
     </section>
 
     <section id="presencePanel" class="presence-panel hidden">
@@ -92,6 +92,18 @@
     <button class="nav mobile-nav-secondary" data-view="audit"><i data-lucide="shield-check"></i><b>Audit</b></button>
   </div>
 
-  <script type="module" src="app.js?v=2026-08-18-ux-polish-1"></script>
+  <div id="globalNotice" class="global-notice hidden" role="status" aria-live="polite"></div>
+  <div id="appConfirmDialog" class="confirm-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="confirmDialogTitle" aria-describedby="confirmDialogMessage">
+    <div class="confirm-panel">
+      <h2 id="confirmDialogTitle">Please confirm</h2>
+      <p id="confirmDialogMessage"></p>
+      <div class="confirm-actions">
+        <button id="confirmDialogAccept" type="button">Confirm</button>
+        <button id="confirmDialogCancel" type="button" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js?v=2026-08-19-reliability-1"></script>
 </body>
 </html>

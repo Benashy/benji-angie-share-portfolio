@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -46,6 +47,8 @@ DAILY_KEEP = 14
 MONTHLY_KEEP = 24
 FETCH_ATTEMPTS = 3
 FETCH_RETRY_SECONDS = 90
+PAGE_SIZE = 500
+BACKUP_FORMAT_VERSION = 2
 
 
 def load_env(path: Path) -> None:
@@ -59,18 +62,23 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-def request_json(url: str, service_key: str) -> list[dict]:
+def request_json_page(url: str, service_key: str) -> tuple[list[dict], int | None]:
     request = Request(
         url,
         headers={
             "apikey": service_key,
             "Authorization": f"Bearer {service_key}",
             "Accept": "application/json",
+            "Prefer": "count=exact",
         },
     )
     try:
         with urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
+            rows = json.loads(response.read().decode("utf-8"))
+            content_range = response.headers.get("Content-Range", "")
+            total_text = content_range.rsplit("/", 1)[-1] if "/" in content_range else ""
+            total = int(total_text) if total_text.isdigit() else None
+            return rows, total
     except HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Supabase request failed {error.code}: {body}") from error
@@ -102,8 +110,21 @@ def request_write(url: str, service_key: str, payload: dict) -> None:
 
 def fetch_table(supabase_url: str, service_key: str, table: str) -> list[dict]:
     base_url = supabase_url.rstrip("/")
-    params = urlencode({"select": "*"})
-    return request_json(f"{base_url}/rest/v1/{table}?{params}", service_key)
+    rows: list[dict] = []
+    expected_total: int | None = None
+    offset = 0
+    while True:
+        params = urlencode({"select": "*", "limit": PAGE_SIZE, "offset": offset})
+        page, total = request_json_page(f"{base_url}/rest/v1/{table}?{params}", service_key)
+        if expected_total is None and total is not None:
+            expected_total = total
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
+    if expected_total is not None and len(rows) != expected_total:
+        raise RuntimeError(f"Backup row-count mismatch for {table}: expected {expected_total}, received {len(rows)}")
+    return rows
 
 
 def upsert_app_status(supabase_url: str, service_key: str, key: str, value: dict) -> None:
@@ -140,6 +161,52 @@ def write_csv(path: Path, rows: list[dict]) -> None:
             writer.writerow(row)
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_backup_files(directory: Path, data: dict[str, list[dict]], created_at: str) -> dict:
+    directory.mkdir(parents=True, exist_ok=True)
+    json_path = directory / "portfolio-backup.json"
+    summary_path = directory / "portfolio-summary.txt"
+    json_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    summary_path.write_text(build_summary(data, created_at), encoding="utf-8")
+    for table, rows in data.items():
+        write_csv(directory / f"{table}.csv", rows)
+    files = [json_path, summary_path, *[directory / f"{table}.csv" for table in data]]
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "created_at": created_at,
+        "tables": {table: len(rows) for table, rows in data.items()},
+        "files": {path.name: file_sha256(path) for path in files},
+    }
+    (directory / "backup-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
+def verify_backup_directory(directory: Path) -> dict:
+    manifest_path = directory / "backup-manifest.json"
+    backup_path = directory / "portfolio-backup.json"
+    if not manifest_path.exists() or not backup_path.exists():
+        raise RuntimeError(f"Backup verification failed: required files are missing from {directory}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format_version") != BACKUP_FORMAT_VERSION:
+        raise RuntimeError(f"Backup verification failed: unsupported format in {directory}")
+    data = json.loads(backup_path.read_text(encoding="utf-8"))
+    actual_counts = {table: len(rows) for table, rows in data.items()}
+    if actual_counts != manifest.get("tables"):
+        raise RuntimeError(f"Backup verification failed: table counts do not match in {directory}")
+    for name, expected_hash in manifest.get("files", {}).items():
+        path = directory / name
+        if not path.exists() or file_sha256(path) != expected_hash:
+            raise RuntimeError(f"Backup verification failed: checksum mismatch for {name}")
+    return manifest
+
+
 def money(value: float | int | None) -> str:
     if value is None:
         return "-"
@@ -162,13 +229,14 @@ def latest_by_key(rows: list[dict], key: str) -> dict[str, dict]:
 
 
 def build_summary(data: dict[str, list[dict]], created_at: str) -> str:
-    transactions = [row for row in data.get("portfolio_transactions", []) if not row.get("is_deleted")]
-    manual_values = [row for row in data.get("manual_values", []) if not row.get("is_deleted")]
-    pensions = [row for row in data.get("pension_values", []) if not row.get("is_deleted")]
+    transactions = [row for row in data.get("portfolio_transactions", []) if not row.get("deleted_at")]
+    manual_values = [row for row in data.get("manual_values", []) if not row.get("deleted_at")]
+    pensions = [row for row in data.get("pension_values", []) if not row.get("deleted_at")]
     latest_snapshots = sorted(data.get("net_worth_snapshots", []), key=lambda row: row.get("month_key") or row.get("snapshot_date") or "", reverse=True)
     latest_snapshot = latest_snapshots[0] if latest_snapshots else {}
 
-    cash_total = sum(float(row.get("amount_gbp") or 0) for row in transactions if row.get("ticker") == "CASH")
+    cash_sign = {"deposit": 1, "sell": 1, "withdrawal": -1, "buy": -1}
+    cash_total = sum(float(row.get("amount_gbp") or 0) * cash_sign.get(row.get("type"), 0) for row in transactions)
     crypto_latest = latest_by_key(manual_values, "account")
     pension_latest = latest_by_key(pensions, "name")
 
@@ -178,7 +246,7 @@ def build_summary(data: dict[str, list[dict]], created_at: str) -> str:
         "",
         "Latest monthly snapshot",
         f"Headline net worth: {money(latest_snapshot.get('net_worth_total')) if latest_snapshot else '-'}",
-        f"Accessible portfolio: {money(latest_snapshot.get('accessible_total')) if latest_snapshot else '-'}",
+        f"Portfolio: {money(latest_snapshot.get('accessible_total')) if latest_snapshot else '-'}",
         f"Cash: {money(latest_snapshot.get('cash_total')) if latest_snapshot else money(cash_total)}",
         f"Pension: {money(latest_snapshot.get('pension_total')) if latest_snapshot else '-'}",
         "",
@@ -231,12 +299,11 @@ def complete_daily_backup_today(root: Path, today_key: str) -> bool:
     if not daily_root.exists():
         return False
     for backup_dir in daily_root.glob(f"{today_key}-*"):
-        if (
-            (backup_dir / "portfolio-backup.json").exists()
-            and (backup_dir / "portfolio-summary.txt").exists()
-            and (backup_dir / "portfolio_transactions.csv").exists()
-        ):
+        try:
+            verify_backup_directory(backup_dir)
             return True
+        except (OSError, RuntimeError, json.JSONDecodeError):
+            continue
     return False
 
 
@@ -307,20 +374,16 @@ def main() -> int:
     if daily_dir.exists():
         shutil.rmtree(daily_dir)
     daily_dir.mkdir(parents=True, exist_ok=True)
-    (daily_dir / "portfolio-backup.json").write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    (daily_dir / "portfolio-summary.txt").write_text(build_summary(data, created_at), encoding="utf-8")
-    for table, rows in data.items():
-        write_csv(daily_dir / f"{table}.csv", rows)
+    manifest = write_backup_files(daily_dir, data, created_at)
+    verify_backup_directory(daily_dir)
     write_success_marker(daily_dir, now, daily_dir)
     write_success_marker(local_marker.parent, now, daily_dir)
 
     latest_refreshed = True
     try:
         latest_dir.mkdir(parents=True, exist_ok=True)
-        (latest_dir / "portfolio-backup.json").write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        (latest_dir / "portfolio-summary.txt").write_text(build_summary(data, created_at), encoding="utf-8")
-        for table, rows in data.items():
-            write_csv(latest_dir / f"{table}.csv", rows)
+        write_backup_files(latest_dir, data, created_at)
+        verify_backup_directory(latest_dir)
         write_success_marker(latest_dir, now, daily_dir)
     except OSError as error:
         latest_refreshed = False
@@ -338,10 +401,14 @@ def main() -> int:
             "timestamp": now.isoformat(),
             "daily_backup": str(daily_dir),
             "latest_scheduled": str(latest_dir) if latest_refreshed else None,
+            "verified": True,
+            "format_version": BACKUP_FORMAT_VERSION,
+            "table_counts": manifest["tables"],
         })
     except RuntimeError as error:
         print(f"Backup completed, but app status update was skipped: {error}")
     print(f"Portfolio backup saved to {daily_dir}")
+    print(f"Verified {sum(manifest['tables'].values())} rows across {len(manifest['tables'])} tables.")
     if latest_refreshed:
         print(f"Latest scheduled backup refreshed at {latest_dir}")
     else:

@@ -20,6 +20,7 @@ create table if not exists portfolio_transactions (
   quantity numeric not null default 0,
   price numeric not null default 0,
   currency text not null check (currency in ('GBP', 'USD')),
+  fx_rate_used numeric check (fx_rate_used is null or fx_rate_used > 0),
   amount_gbp numeric,
   cost_basis_gbp numeric,
   opening_value_gbp numeric,
@@ -32,7 +33,8 @@ create table if not exists portfolio_transactions (
   created_at timestamptz not null default now(),
   created_by uuid references auth.users(id),
   updated_at timestamptz not null default now(),
-  updated_by uuid references auth.users(id)
+  updated_by uuid references auth.users(id),
+  client_request_id uuid not null default gen_random_uuid() unique
 );
 
 create table if not exists manual_values (
@@ -52,7 +54,8 @@ create table if not exists manual_values (
   created_at timestamptz not null default now(),
   created_by uuid references auth.users(id),
   updated_at timestamptz not null default now(),
-  updated_by uuid references auth.users(id)
+  updated_by uuid references auth.users(id),
+  client_request_id uuid not null default gen_random_uuid() unique
 );
 
 create table if not exists pension_values (
@@ -67,7 +70,8 @@ create table if not exists pension_values (
   created_at timestamptz not null default now(),
   created_by uuid references auth.users(id),
   updated_at timestamptz not null default now(),
-  updated_by uuid references auth.users(id)
+  updated_by uuid references auth.users(id),
+  client_request_id uuid not null default gen_random_uuid() unique
 );
 
 create table if not exists audit_log (

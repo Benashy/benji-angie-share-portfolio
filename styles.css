@@ -1125,6 +1125,7 @@ th {
   --line: #cfd2d2;
   --panel: #ffffff;
   --gold: #b28c4e;
+  --gold-text: #82632f;
   --green: #168153;
   --amber: #a86f12;
   --red: #b64138;
@@ -2187,7 +2188,7 @@ button.nav svg {
 
 .nav-group-label {
   margin: 21px 9px 7px;
-  color: #5f6466;
+  color: #a6aaab;
   font-size: 8px;
   text-transform: uppercase;
 }
@@ -2259,13 +2260,36 @@ summary:focus-visible,
 }
 
 th[data-sort] {
-  cursor: pointer;
   user-select: none;
 }
 
 th[data-sort]::after {
-  margin-left: 5px;
+  content: none;
+}
+
+.table-sort-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  min-height: 28px;
+  margin: -5px -7px;
+  padding: 5px 7px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  text-transform: inherit;
+  white-space: nowrap;
+}
+
+.table-sort-control::after {
+  color: var(--gold-text);
   content: "↕";
+  font-size: 11px;
 }
 
 th[data-sort][data-direction="asc"],
@@ -2274,11 +2298,16 @@ th[data-sort][data-direction="desc"] {
   background: #ece9e1;
 }
 
-th[data-sort][data-direction="asc"]::after {
+.table-sort-control:hover {
+  color: var(--ink);
+  background: rgba(178, 140, 78, .1);
+}
+
+th[data-sort][data-direction="asc"] .table-sort-control::after {
   content: "↑";
 }
 
-th[data-sort][data-direction="desc"]::after {
+th[data-sort][data-direction="desc"] .table-sort-control::after {
   content: "↓";
 }
 
@@ -3265,5 +3294,148 @@ details > summary::marker {
   .ledger-backup-row button {
     width: 100%;
     min-height: 44px;
+  }
+}
+
+/* Reliability and accessibility refinements */
+.market-warning,
+.warning-text {
+  color: var(--amber);
+}
+
+.form-error {
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  color: #84271f;
+  background: #fff2f0;
+  border-left: 3px solid var(--red);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+[aria-invalid="true"] {
+  border-color: var(--red) !important;
+  box-shadow: 0 0 0 2px rgba(182, 65, 56, .12);
+}
+
+.global-notice {
+  position: fixed;
+  z-index: 120;
+  right: 20px;
+  bottom: 20px;
+  width: min(390px, calc(100vw - 40px));
+  padding: 13px 15px;
+  color: #ffffff;
+  background: #242728;
+  border-left: 4px solid var(--gold);
+  box-shadow: 0 14px 36px rgba(17, 19, 20, .24);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.global-notice.success {
+  background: #0f6541;
+  border-left-color: #8fd3b1;
+}
+
+.global-notice.error {
+  background: #8f3029;
+  border-left-color: #ffb7b0;
+}
+
+.global-notice.warning {
+  color: #261b08;
+  background: #f5dca7;
+  border-left-color: var(--amber);
+}
+
+.confirm-dialog {
+  position: fixed;
+  z-index: 130;
+  inset: 0;
+  display: grid;
+  padding: 16px;
+  background: rgba(17, 19, 20, .58);
+  backdrop-filter: blur(2px);
+  place-items: center;
+}
+
+.confirm-dialog.hidden {
+  display: none;
+}
+
+.confirm-panel {
+  width: min(440px, calc(100vw - 32px));
+  padding: 22px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--gold);
+  border-radius: 6px;
+  box-shadow: 0 28px 70px rgba(17, 19, 20, .3);
+}
+
+.confirm-dialog h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 20px;
+}
+
+.confirm-actions button {
+  margin: 0;
+}
+
+.confirm-dialog.danger .confirm-panel {
+  border-top-color: var(--red);
+}
+
+.confirm-dialog.danger #confirmDialogAccept {
+  background: var(--red);
+  border-color: var(--red);
+}
+
+@media (max-width: 900px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .global-notice {
+    right: 12px;
+    bottom: calc(78px + env(safe-area-inset-bottom));
+    width: calc(100vw - 24px);
+  }
+
+  .performance-sort-tools {
+    display: grid;
+  }
+
+  .confirm-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

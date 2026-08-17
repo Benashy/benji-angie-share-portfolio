@@ -1,0 +1,25 @@
+name: Verify portfolio app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: npm test
+      - run: node --check app.js
+      - run: node --check supabase/functions/_shared/portfolio-core.js
+      - run: python -m py_compile tools/portfolio_dropbox_backup.py tools/portfolio_restore.py

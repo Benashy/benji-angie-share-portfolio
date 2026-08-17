@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
+import { calculatePortfolioCore } from "../_shared/portfolio-core.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -194,164 +195,31 @@ function activeRows(rows: AnyRow[]) {
   return (rows || []).filter((row) => !row.deleted_at);
 }
 
-function dateValue(value: string) {
-  const raw = String(value || "").trim();
-  let match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
-  match = raw.match(/^(\d{1,2})[.-](\d{1,2})[.-](\d{2}|\d{4})$/);
-  if (match) {
-    const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
-    return new Date(year, Number(match[2]) - 1, Number(match[1])).getTime();
-  }
-  const parsed = Date.parse(raw);
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function transactionTypeOrder(type: string) {
-  return { opening: 0, buy: 1, sell: 2, deposit: 3, withdrawal: 4 }[type] ?? 9;
-}
-
-function orderedTransactions(rows: AnyRow[]) {
-  return [...rows].sort((a, b) =>
-    dateValue(a.date) - dateValue(b.date)
-    || transactionTypeOrder(a.type) - transactionTypeOrder(b.type)
-    || String(a.created_at || "").localeCompare(String(b.created_at || ""))
-    || String(a.id || "").localeCompare(String(b.id || ""))
-  );
-}
-
 function displayHoldingName(ticker: string, holding: string) {
   if (ticker === "Crypto") return "Crypto (Revolut)";
   return holding || holdingNameMap[ticker] || ticker;
-}
-
-function latestByKey(rows: AnyRow[], keyFn: (row: AnyRow) => string) {
-  const grouped = new Map<string, AnyRow>();
-  for (const row of activeRows(rows)) grouped.set(keyFn(row), row);
-  return [...grouped.values()];
-}
-
-function latestManualValue(rows: AnyRow[], ticker: string, owner: string, account: string) {
-  const matches = activeRows(rows).filter((row) => row.ticker === ticker && row.owner === owner && row.account === account);
-  return matches[matches.length - 1] || null;
 }
 
 function priceMap(rows: AnyRow[]) {
   return new Map(activeRows(rows).map((row) => [row.ticker, row]));
 }
 
-function aggregatePositions(positions: AnyRow[]) {
-  const grouped = new Map<string, AnyRow>();
-  for (const position of positions) {
-    const item = grouped.get(position.ticker) || {
-      ticker: position.ticker,
-      holding: position.holding,
-      quantity: 0,
-      value_gbp: 0,
-      cost_basis_gbp: 0,
-      gain_gbp: 0,
-      children: [],
-    };
-    item.quantity += Number(position.quantity || 0);
-    item.value_gbp += Number(position.value_gbp || 0);
-    item.cost_basis_gbp += Number(position.cost_basis_gbp || 0);
-    item.gain_gbp += Number(position.gain_gbp || 0);
-    item.children.push(position);
-    grouped.set(position.ticker, item);
-  }
-  return [...grouped.values()].map((item) => ({
-    ...item,
-    gain_pct: item.cost_basis_gbp ? item.gain_gbp / item.cost_basis_gbp : null,
-  })).sort((a, b) => b.value_gbp - a.value_gbp);
-}
-
 function calculatePortfolio(data: Record<string, AnyRow[]>) {
-  const grouped = new Map<string, AnyRow>();
-  const cash = new Map<string, AnyRow>();
-  const prices = priceMap(data.market_prices || []);
-  const fx = Number(prices.get("GBPUSD=X")?.price || 1.3427);
-
-  for (const tx of orderedTransactions(activeRows(data.portfolio_transactions || []))) {
-    const key = `${tx.owner}|${tx.account}`;
-    const cashValue = cash.get(key) || { owner: tx.owner, account: tx.account, amount: 0 };
-    if (tx.type === "deposit") {
-      cashValue.amount += Number(tx.amount_gbp || 0);
-      cash.set(key, cashValue);
-      continue;
-    }
-    if (tx.type === "withdrawal") {
-      cashValue.amount -= Number(tx.amount_gbp || 0);
-      cash.set(key, cashValue);
-      continue;
-    }
-    const positionKey = `${tx.owner}|${tx.account}|${tx.ticker}`;
-    const item = grouped.get(positionKey) || {
-      owner: tx.owner,
-      account: tx.account,
-      ticker: tx.ticker,
-      holding: tx.holding || tx.ticker,
-      quantity: 0,
-      cost_basis_gbp: 0,
-      opening_value_gbp: 0,
-    };
-    const quantity = Number(tx.quantity || 0);
-    if (tx.type === "opening" || tx.type === "buy") {
-      item.quantity += quantity;
-      const cost = tx.cost_basis_gbp ?? ((quantity * Number(tx.price || 0)) / (tx.currency === "USD" ? fx : 1));
-      const cashCost = tx.amount_gbp ?? cost;
-      item.cost_basis_gbp += Number(cost || 0);
-      if (tx.type === "opening" && tx.opening_value_gbp !== null && tx.opening_value_gbp !== undefined) {
-        item.opening_value_gbp += Number(tx.opening_value_gbp || 0);
-      }
-      if (tx.type === "buy") {
-        cashValue.amount -= Number(cashCost || 0);
-        cash.set(key, cashValue);
-      }
-    } else if (tx.type === "sell") {
-      const avgCost = item.quantity ? item.cost_basis_gbp / item.quantity : 0;
-      const sellQty = Math.min(quantity, item.quantity);
-      item.quantity -= sellQty;
-      item.cost_basis_gbp -= avgCost * sellQty;
-      cashValue.amount += Number(tx.amount_gbp || 0);
-      cash.set(key, cashValue);
-    }
-    grouped.set(positionKey, item);
-  }
-
-  const positions: AnyRow[] = [];
-  for (const item of grouped.values()) {
-    if (item.quantity <= 0) continue;
-    const manual = latestManualValue(data.manual_values || [], item.ticker, item.owner, item.account);
-    let valueGbp = Number(item.cost_basis_gbp || 0);
-    if (manual) {
-      valueGbp = Number(manual.value_gbp || 0);
-    } else if (prices.has(item.ticker)) {
-      const quote = prices.get(item.ticker);
-      const localValue = Number(quote.price || 0) * Number(item.quantity || 0);
-      valueGbp = quote.currency === "USD" ? localValue / fx : localValue;
-    } else if (item.opening_value_gbp) {
-      valueGbp = Number(item.opening_value_gbp);
-    }
-    const gainGbp = valueGbp - Number(item.cost_basis_gbp || 0);
-    const gainPct = item.cost_basis_gbp ? gainGbp / item.cost_basis_gbp : null;
-    positions.push({ ...item, holding: displayHoldingName(item.ticker, item.holding), value_gbp: valueGbp, gain_gbp: gainGbp, gain_pct: gainPct });
-  }
-
-  const combined = aggregatePositions(positions);
-  const totalPositions = positions.reduce((sum, item) => sum + item.value_gbp, 0);
-  const totalCash = [...cash.values()].reduce((sum, item) => sum + item.amount, 0);
-  const pensionTotal = latestByKey(data.pension_values || [], (row) => row.name).reduce((sum, item) => sum + Number(item.value_gbp || 0), 0);
-  return {
-    fx,
-    positions,
-    combined,
-    cash: [...cash.values()],
-    totalPositions,
-    totalCash,
-    accessibleTotal: totalPositions + totalCash,
-    pensionTotal,
-    netWorthTotal: totalPositions + totalCash + pensionTotal,
-  };
+  const portfolio = calculatePortfolioCore({
+    transactions: data.portfolio_transactions || [],
+    manualValues: data.manual_values || [],
+    pensions: data.pension_values || [],
+    marketPrices: data.market_prices || [],
+  });
+  portfolio.positions = portfolio.positions.map((item: AnyRow) => ({
+    ...item,
+    holding: displayHoldingName(item.ticker, item.holding),
+  }));
+  portfolio.combined = portfolio.combined.map((item: AnyRow) => ({
+    ...item,
+    holding: displayHoldingName(item.ticker, item.holding),
+  }));
+  return portfolio;
 }
 
 function yahooSymbol(ticker: string) {
@@ -399,19 +267,39 @@ async function refreshMarketPrices(admin: any) {
     const ticker = String(row.ticker || "").trim();
     if (ticker && ticker !== "CASH" && ticker !== "Crypto") tickers.add(ticker);
   }
-  const results = await Promise.allSettled([...tickers].map((ticker) => fetchYahooQuote(ticker)));
+  const requested = [...tickers];
+  const results = await Promise.allSettled(requested.map((ticker) => fetchYahooQuote(ticker)));
   const updated: AnyRow[] = [];
-  const skipped: string[] = [];
+  const failed: string[] = [];
   results.forEach((result, index) => {
-    const ticker = [...tickers][index];
+    const ticker = requested[index];
     if (result.status === "fulfilled" && result.value) updated.push(result.value);
-    if (result.status === "rejected") skipped.push(`${ticker}: ${result.reason?.message || "Yahoo lookup failed"}`);
+    if (result.status === "rejected" || !result.value) failed.push(ticker);
+  });
+  const retryResults = await Promise.allSettled(failed.map((ticker) => fetchYahooQuote(ticker)));
+  const skipped: AnyRow[] = [];
+  retryResults.forEach((result, index) => {
+    const ticker = failed[index];
+    if (result.status === "fulfilled" && result.value) updated.push(result.value);
+    else skipped.push({ ticker, error: result.status === "rejected" ? result.reason?.message || "Yahoo lookup failed" : "Yahoo lookup failed" });
   });
   if (updated.length) {
     const { error: upsertError } = await admin.from("market_prices").upsert(updated, { onConflict: "ticker" });
     if (upsertError) throw upsertError;
   }
-  return { updated: updated.length, skipped };
+  const updatedTickers = [...new Set(updated.map((row) => row.ticker))];
+  return {
+    requested,
+    updated: updatedTickers,
+    skipped,
+    complete: skipped.length === 0 && updatedTickers.length === requested.length,
+  };
+}
+
+function assertCompleteMarketRefresh(result: AnyRow) {
+  if (result.complete) return;
+  const missing = (result.skipped || []).map((item: AnyRow) => item.ticker).join(", ") || "unknown tickers";
+  throw new Error(`Market refresh was incomplete (${missing}). No portfolio snapshot or report was created.`);
 }
 
 async function loadPortfolioData(admin: any) {
@@ -634,8 +522,8 @@ function formatHoldingLine(item: AnyRow, includeChange = true) {
   return `${base} | ${moneySigned(item.change_gbp)} / ${pctSigned(item.change_pct)}`;
 }
 
-async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly" | "test_monthly") {
-  await refreshMarketPrices(admin);
+async function buildReport(admin: any, type: "weekly" | "monthly" | "test_weekly" | "test_monthly", pricesReady = false) {
+  if (!pricesReady) assertCompleteMarketRefresh(await refreshMarketPrices(admin));
   const date = todayUk();
   const reportType = type.includes("monthly") ? "monthly" : "weekly";
   const kind = type.startsWith("test_") ? "manual" : reportType;
@@ -835,25 +723,59 @@ async function handleRunSchedule(ctx: AnyRow) {
   if (existingRunError) throw existingRunError;
   if (existingRun) return { ok: true, status: "already_handled", report_type: type, period_end: today };
 
-  const data = await loadPortfolioData(ctx.admin);
-  const portfolio = calculatePortfolio(data);
-  await saveSnapshot(ctx.admin, portfolio, data, "daily", today);
-  if (type === "daily_snapshot") {
-    await ctx.admin.from("portfolio_report_runs").insert({ report_type: type, period_end: today, status: "skipped", message: "Daily snapshot only." });
-    return { ok: true, status: "snapshot_only" };
+  try {
+    const refresh = await refreshMarketPrices(ctx.admin);
+    assertCompleteMarketRefresh(refresh);
+    const data = await loadPortfolioData(ctx.admin);
+    const portfolio = calculatePortfolio(data);
+    await saveSnapshot(ctx.admin, portfolio, data, "daily", today);
+    if (type === "daily_snapshot") {
+      await ctx.admin.from("portfolio_report_runs").insert({ report_type: type, period_end: today, status: "skipped", message: "Daily snapshot only." });
+      return { ok: true, status: "snapshot_only" };
+    }
+    const report = await buildReport(ctx.admin, type, true);
+    const { data: settingsRows, error } = await ctx.admin.from("portfolio_report_settings").select("*");
+    if (error) throw error;
+    const reportKey = `${type}-${today}`;
+    let sent = 0;
+    let alreadySent = 0;
+    const deliveryErrors: string[] = [];
+    for (const row of settingsRows || []) {
+      const telegram = row.data?.telegram || {};
+      if (!telegram.enabled || !telegram.chat_id) continue;
+      if (telegram.last_report_key === reportKey) {
+        alreadySent += 1;
+        continue;
+      }
+      try {
+        await telegramApi("sendMessage", { chat_id: telegram.chat_id, text: report.message, disable_web_page_preview: true });
+        await saveTelegramSettings(ctx.admin, row.user_id, { last_report_key: reportKey, last_report_sent_at: new Date().toISOString() });
+        sent += 1;
+      } catch (deliveryError) {
+        deliveryErrors.push(deliveryError instanceof Error ? deliveryError.message : String(deliveryError));
+      }
+    }
+    const delivered = sent + alreadySent;
+    if (deliveryErrors.length) throw new Error(`${deliveryErrors.length} Telegram delivery failed. A retry will skip recipients already sent.`);
+    const status = delivered ? "sent" : "skipped";
+    await ctx.admin.from("portfolio_report_runs").insert({
+      report_type: type,
+      period_end: today,
+      status,
+      message: report.message,
+      error: null,
+      sent_at: delivered ? new Date().toISOString() : null,
+    });
+    return { ok: true, report_type: type, sent, already_sent: alreadySent };
+  } catch (error) {
+    await ctx.admin.from("portfolio_report_runs").insert({
+      report_type: type,
+      period_end: today,
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-  const report = await buildReport(ctx.admin, type);
-  const { data: settingsRows, error } = await ctx.admin.from("portfolio_report_settings").select("*");
-  if (error) throw error;
-  let sent = 0;
-  for (const row of settingsRows || []) {
-    const telegram = row.data?.telegram || {};
-    if (!telegram.enabled || !telegram.chat_id) continue;
-    await telegramApi("sendMessage", { chat_id: telegram.chat_id, text: report.message, disable_web_page_preview: true });
-    sent += 1;
-  }
-  await ctx.admin.from("portfolio_report_runs").insert({ report_type: type, period_end: today, status: sent ? "sent" : "skipped", message: report.message, sent_at: sent ? new Date().toISOString() : null });
-  return { ok: true, report_type: type, sent };
 }
 
 Deno.serve(async (req) => {
