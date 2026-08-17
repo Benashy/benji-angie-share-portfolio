@@ -6,7 +6,7 @@ import {
   calculatePortfolioCore,
   orderedTransactions,
   validateTransactionInput,
-} from "../supabase/functions/_shared/portfolio-core.js";
+} from "../portfolio-core.js";
 
 const base = {
   owner: "Benji",

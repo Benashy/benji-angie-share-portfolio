@@ -19,7 +19,7 @@ Deploy these folders with their shared dependency:
 
 - `refresh-prices`, with JWT verification enabled.
 - `portfolio-telegram-reports`, retaining its existing scheduler authentication arrangement.
-- `_shared/portfolio-core.js` is used by both the browser and Telegram report function.
+- `portfolio-core.js` at the repository root is used by both the browser and Telegram report function. Keep its relative path intact when deploying the Telegram function.
 
 Required function secrets and authentication settings remain in Supabase. They must never be placed in browser files or committed to GitHub.
 

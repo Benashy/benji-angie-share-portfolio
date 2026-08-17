@@ -3,12 +3,12 @@ import {
   calculatePortfolioCore,
   orderedTransactions,
   validateTransactionInput,
-} from "./supabase/functions/_shared/portfolio-core.js";
+} from "./portfolio-core.js?v=2026-08-19-reliability-2";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-08-19-reliability-1";
+const APP_VERSION = "2026-08-19-reliability-2";
 
 const state = {
   session: null,
