@@ -4,12 +4,12 @@ import {
   orderedTransactions,
   quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-09-21-ajb-quotes-1";
+} from "./portfolio-core.js?v=2026-09-21-ajb-quotes-2";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-09-21-ajb-quotes-1";
+const APP_VERSION = "2026-09-21-ajb-quotes-2";
 
 const state = {
   session: null,
@@ -860,12 +860,22 @@ async function init() {
   if (isConfigured) {
     const { data } = await supabaseClient.auth.getSession();
     state.session = data.session;
-    supabaseClient.auth.onAuthStateChange(async (_event, session) => {
-      state.session = session;
-      await loadApp();
-    });
+    supabaseClient.auth.onAuthStateChange(handleSessionChange);
   }
   await loadApp();
+}
+
+function handleSessionChange(event, session) {
+  state.session = session;
+  if (event === "INITIAL_SESSION" || event === "TOKEN_REFRESHED") return;
+  // Database requests inside this callback can wait on the auth lock it still holds.
+  window.setTimeout(() => loadApp().catch(showAppLoadError), 0);
+}
+
+function showAppLoadError(error) {
+  console.error(error);
+  hideBootScreen();
+  el("statusLine").textContent = `App error: ${error.message}`;
 }
 
 async function loadApp() {
@@ -3036,8 +3046,4 @@ function hideBootScreen() {
   if (boot) boot.classList.add("hidden");
 }
 
-init().catch((error) => {
-  console.error(error);
-  hideBootScreen();
-  el("statusLine").textContent = `App error: ${error.message}`;
-});
+init().catch(showAppLoadError);

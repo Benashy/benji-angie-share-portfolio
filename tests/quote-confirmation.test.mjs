@@ -69,3 +69,20 @@ test("market reload updates only prices and preserves a transaction draft", asyn
   assert.deepEqual(state.ledger.transactions, [row]);
   assert.equal(state.transactionDrafts.equity, row);
 });
+
+test("session callbacks release the auth lock before loading portfolio data", async () => {
+  const start = app.indexOf("function handleSessionChange(");
+  const end = app.indexOf("function showAppLoadError(", start);
+  let loads = 0;
+  const pending = [];
+  const state = {};
+  const context = vm.createContext({ state, window: { setTimeout: (work) => pending.push(work) }, loadApp: async () => { loads++; }, showAppLoadError: () => {} });
+  vm.runInContext(app.slice(start, end), context);
+  assert.equal(context.handleSessionChange("SIGNED_IN", { user: { id: "test" } }), undefined);
+  assert.equal(loads, 0);
+  await pending[0]();
+  assert.equal(loads, 1);
+  context.handleSessionChange("TOKEN_REFRESHED", { user: { id: "test" } });
+  context.handleSessionChange("INITIAL_SESSION", { user: { id: "test" } });
+  assert.equal(pending.length, 1);
+});
