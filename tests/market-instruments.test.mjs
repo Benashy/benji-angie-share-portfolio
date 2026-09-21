@@ -9,7 +9,7 @@ const meta = {
   regularMarketTime: Math.floor(now / 1000) - 900,
   longName: "AJ Bell plc", exchangeName: "LSE",
 };
-const purchase = { type: "buy", ticker: "AJB", holding: "AJ Bell", owner: "Test", account: "Trading", date: "2026-09-17", quantity: 700, price: 5.9063, currency: "GBP", amount_gbp: 4134.41 };
+const purchase = { type: "buy", ticker: "AJB", holding: "AJ Bell", owner: "Test", account: "Trading", date: "2026-01-01", quantity: 100, price: 5.90, currency: "GBP", amount_gbp: 590 };
 
 test("AJB uses the confirmed London listing and pence are converted once", () => {
   assert.equal(yahooSymbol("ajb"), "AJB.L");
@@ -46,17 +46,17 @@ test("London USD listings remain USD and explicit .L symbols work", () => {
 test("AJB valuation and both performance rankings use the actual GBP cost", () => {
   const quote = normaliseYahooQuote("AJB", meta, now);
   const portfolio = calculatePortfolioCore({ transactions: [purchase], marketPrices: [quote] });
-  assert.ok(Math.abs(portfolio.totalPositions - 4231.5) < 1e-8);
-  assert.ok(Math.abs(portfolio.combined[0].gain_gbp - 97.09) < 1e-8);
-  assert.ok(Math.abs(portfolio.combined[0].gain_pct - 97.09 / 4134.41) < 1e-8);
+  assert.ok(Math.abs(portfolio.totalPositions - 604.5) < 1e-8);
+  assert.ok(Math.abs(portfolio.combined[0].gain_gbp - 14.5) < 1e-8);
+  assert.ok(Math.abs(portfolio.combined[0].gain_pct - 14.5 / 590) < 1e-8);
   const down = calculatePortfolioCore({ transactions: [purchase], marketPrices: [{ ...quote, price: 5.8 }] });
-  assert.ok(Math.abs(down.combined[0].gain_gbp + 74.41) < 1e-8);
+  assert.ok(Math.abs(down.combined[0].gain_gbp + 10) < 1e-8);
 });
 
 test("a previously cached wrong AJB quote is not used or ranked", () => {
   const obsolete = { ticker: "AJB", yahoo_symbol: "AJB", price: 23.93, currency: "USD", market_time: "2014-03-25T20:00:00Z", fetched_at: new Date(now).toISOString() };
   const portfolio = calculatePortfolioCore({ transactions: [purchase], marketPrices: [obsolete] });
-  assert.equal(portfolio.totalPositions, 4134.41);
+  assert.equal(portfolio.totalPositions, 590);
   assert.equal(portfolio.combined[0].gain_gbp, null);
   assert.equal(portfolio.combined[0].gain_pct, null);
   assert.match(portfolio.combined[0].price_issue, /Expected AJB.L/);
