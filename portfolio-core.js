@@ -1,3 +1,6 @@
+import { quoteValidationError } from "./market-instruments.js";
+export { quoteValidationError } from "./market-instruments.js";
+
 const EPSILON = 1e-8;
 
 export function activeRows(rows = []) {
@@ -116,13 +119,16 @@ function aggregatePositions(positions) {
   return [...grouped.values()].map((item) => {
     const owners = [...new Set(item.children.map((child) => child.owner))];
     const accounts = [...new Set(item.children.map((child) => child.account))];
+    const priceIssue = item.children.find((child) => child.price_issue)?.price_issue || "";
     return {
       ...item,
       sources: [...item.sources],
       owner: owners.length > 1 ? "Both" : owners[0],
       account: accounts.length > 1 ? "Multiple" : accounts[0],
       source: [...item.sources].includes("Yahoo") ? "Yahoo" : [...item.sources].join(", "),
-      gain_pct: item.cost_basis_gbp ? item.gain_gbp / item.cost_basis_gbp : null,
+      price_issue: priceIssue,
+      gain_gbp: priceIssue ? null : item.gain_gbp,
+      gain_pct: !priceIssue && item.cost_basis_gbp ? item.gain_gbp / item.cost_basis_gbp : null,
     };
   }).sort((a, b) => b.value_gbp - a.value_gbp);
 }
@@ -196,12 +202,13 @@ export function calculatePortfolioCore({
     if (item.quantity <= EPSILON) continue;
     const manual = latestManualValue(manualValues, item.ticker, item.owner, item.account);
     const quote = prices.get(item.ticker);
+    const priceIssue = manual ? "" : quoteValidationError(quote);
     let valueGbp = Number(item.cost_basis_gbp || 0);
     let source = "Cost basis";
     if (manual) {
       valueGbp = Number(manual.value_gbp || 0);
       source = "Manual";
-    } else if (quote) {
+    } else if (quote && !priceIssue) {
       const localValue = Number(quote.price || 0) * Number(item.quantity || 0);
       valueGbp = quote.currency === "USD" ? localValue / fx : localValue;
       source = isPriceFresh(quote) ? "Yahoo" : "Cached Yahoo";
@@ -209,9 +216,9 @@ export function calculatePortfolioCore({
       valueGbp = Number(item.opening_value_gbp);
       source = "Opening value";
     }
-    const gainGbp = valueGbp - Number(item.cost_basis_gbp || 0);
-    const gainPct = item.cost_basis_gbp ? gainGbp / item.cost_basis_gbp : null;
-    positions.push({ ...item, value_gbp: valueGbp, gain_gbp: gainGbp, gain_pct: gainPct, source });
+    const gainGbp = priceIssue ? null : valueGbp - Number(item.cost_basis_gbp || 0);
+    const gainPct = !priceIssue && item.cost_basis_gbp ? gainGbp / item.cost_basis_gbp : null;
+    positions.push({ ...item, value_gbp: valueGbp, gain_gbp: gainGbp, gain_pct: gainPct, source, price_issue: priceIssue });
   }
 
   const combined = aggregatePositions(positions);

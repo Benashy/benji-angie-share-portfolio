@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 import { calculatePortfolioCore } from "../../../portfolio-core.js";
+import { yahooSymbol, normaliseYahooQuote, fxHistoryMetrics } from "../../../market-instruments.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,14 +12,6 @@ const APPROVED_EMAILS = new Set([
   "ben_ashurst@me.com",
   "angelika_kleczka@hotmail.com",
 ]);
-
-const symbolMap: Record<string, string> = {
-  IAG: "IAG.L",
-  SGLN: "SGLN.L",
-  VUAA: "VUAA.L",
-  WXBT: "WXBT.L",
-  Crypto: "",
-};
 
 const holdingNameMap: Record<string, string> = {
   AAPL: "Apple",
@@ -222,12 +215,6 @@ function calculatePortfolio(data: Record<string, AnyRow[]>) {
   return portfolio;
 }
 
-function yahooSymbol(ticker: string) {
-  if (symbolMap[ticker] !== undefined) return symbolMap[ticker];
-  if (ticker === "CASH") return "";
-  return ticker;
-}
-
 async function fetchYahooQuote(ticker: string) {
   const symbol = yahooSymbol(ticker);
   if (!symbol) return null;
@@ -239,24 +226,9 @@ async function fetchYahooQuote(ticker: string) {
   const payload = await response.json();
   const result = payload?.chart?.result?.[0];
   const meta = result?.meta;
-  const rawPrice = Number(meta?.regularMarketPrice ?? meta?.previousClose);
-  if (!Number.isFinite(rawPrice)) throw new Error(`${ticker}: Yahoo did not return a price`);
-  const rawCurrency = String(meta?.currency || "USD");
-  let currency = rawCurrency.toUpperCase();
-  let price = rawPrice;
-  if (rawCurrency === "GBp" || currency === "GBX" || currency === "GBPENCE" || currency === "GBP PENCE") {
-    currency = "GBP";
-    price = rawPrice / 100;
-  }
-  return {
-    ticker,
-    yahoo_symbol: symbol,
-    price,
-    currency,
-    market_time: meta?.regularMarketTime ? new Date(Number(meta.regularMarketTime) * 1000).toISOString() : null,
-    fetched_at: new Date().toISOString(),
-    source: "Yahoo",
-  };
+  const quote = normaliseYahooQuote(ticker, meta);
+  if (ticker === "GBPUSD=X") Object.assign(quote.metrics, fxHistoryMetrics(result, quote.price));
+  return quote;
 }
 
 async function refreshMarketPrices(admin: any) {

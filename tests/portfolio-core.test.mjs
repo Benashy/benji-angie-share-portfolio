@@ -18,7 +18,7 @@ const base = {
 };
 
 function quote(price = 100) {
-  return [{ ticker: "MSFT", price, currency: "GBP", fetched_at: "2026-08-19T12:00:00Z" }];
+  return [{ ticker: "MSFT", yahoo_symbol: "MSFT", price, currency: "GBP", market_time: new Date().toISOString(), fetched_at: new Date().toISOString() }];
 }
 
 test("same-day transactions follow their creation time", () => {

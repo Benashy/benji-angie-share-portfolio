@@ -2,13 +2,14 @@ import {
   availableQuantityForSale,
   calculatePortfolioCore,
   orderedTransactions,
+  quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-08-19-reliability-3";
+} from "./portfolio-core.js?v=2026-09-21-ajb-quotes-1";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-08-19-reliability-3";
+const APP_VERSION = "2026-09-21-ajb-quotes-1";
 
 const state = {
   session: null,
@@ -576,7 +577,7 @@ function marketPriceMap() {
 }
 
 function priceIsFresh(row) {
-  if (!row?.fetched_at) return false;
+  if (!row?.fetched_at || quoteValidationError(row)) return false;
   return Date.now() - new Date(row.fetched_at).getTime() < priceStalenessMinutes * 60 * 1000;
 }
 
@@ -592,12 +593,17 @@ function requiredMarketTickers() {
 function marketDataHealth(portfolio, minutes = priceStalenessMinutes) {
   const required = requiredMarketTickers();
   const missing = [];
+  const invalid = [];
   const stale = [];
   const rows = [];
   for (const ticker of required) {
     const row = portfolio.prices.get(ticker);
     if (!row?.fetched_at) {
       missing.push(ticker);
+      continue;
+    }
+    if (quoteValidationError(row)) {
+      invalid.push(ticker);
       continue;
     }
     rows.push(row);
@@ -607,9 +613,10 @@ function marketDataHealth(portfolio, minutes = priceStalenessMinutes) {
     required,
     rows,
     missing,
+    invalid,
     stale,
-    complete: missing.length === 0,
-    fresh: missing.length === 0 && stale.length === 0,
+    complete: missing.length === 0 && invalid.length === 0,
+    fresh: missing.length === 0 && invalid.length === 0 && stale.length === 0,
   };
 }
 
@@ -643,7 +650,7 @@ function marketFreshnessText(portfolio) {
   const fx = portfolio.prices.get("GBPUSD=X");
   const equityText = `Equities ${refreshAgeText(equity?.fetched_at)}`;
   const fxText = `FX ${refreshAgeText(fx?.fetched_at)}`;
-  const issueText = health.missing.length
+  const issueText = health.invalid.length ? ` · Price check required: ${health.invalid.join(", ")}` : health.missing.length
     ? ` · ${health.missing.length} missing`
     : health.stale.length ? ` · ${health.stale.length} stale` : "";
   return `${equityText} · ${fxText}${issueText}`;
@@ -1177,6 +1184,7 @@ function renderDashboard(portfolio) {
   const fxUpdated = refreshAgeText(portfolio.prices.get("GBPUSD=X")?.fetched_at);
   const fxFreshClass = fxUpdated === "more than an hour ago" ? " market-error" : fxUpdated === "not refreshed" ? "" : " market-ok";
   el("dashboardView").innerHTML = `
+    ${portfolio.combined.some((item) => item.price_issue) ? '<p class="notice warning" role="status">Some market prices could not be verified. Affected holdings use their opening value or cost as an estimate, and are excluded from gain/loss rankings. Refresh prices before relying on the portfolio total.</p>' : ""}
     <section class="grid two hero-metrics">
       <div class="card"><div class="subtle">Portfolio</div><div class="metric">${money(portfolio.accessibleTotal)}</div><p class="subtle">Invested ${money(portfolio.totalPositions)} (${pct(investedPct)}) | Cash ${money(portfolio.totalCash)} (${pct(cashPct)})</p>${accountDetails}</div>
       <div class="card"><div class="subtle">Pension</div><div class="metric">${money(portfolio.pensionTotal)}</div>${pensionDetails}</div>
@@ -1482,7 +1490,7 @@ function renderHoldings(portfolio) {
         <td class="holding-cell holding-value" data-sort-value="${Number(item.value_gbp || 0)}">${money(item.value_gbp)}</td>
         <td class="holding-cell holding-gain" data-sort-value="${Number(item.gain_pct || 0)}">${pctSigned(item.gain_pct)}</td>
         <td class="holding-cell holding-research" data-sort-value="${escapeHtml(researchMeta.label)}">${researchCell}</td>
-        <td class="holding-cell holding-status">${statusBadge(item.gain_pct)}</td>
+        <td class="holding-cell holding-status">${item.price_issue ? `<span class="warn" title="${escapeHtml(item.price_issue)}">Price unavailable</span>` : statusBadge(item.gain_pct)}</td>
       </tr>
       ${detailRow}
     `;
@@ -1669,15 +1677,28 @@ function bindRefreshButtons() {
   });
 }
 
+async function reloadMarketPrices() {
+  const prices = await selectAllRows("market_prices", { orderBy: "fetched_at", ascending: false });
+  if (prices.error) throw prices.error;
+  state.ledger.market_prices = prices.data || [];
+}
+
 async function refreshMarketPrices(options = {}) {
   const buttons = [...document.querySelectorAll(".refresh-prices-action")];
   if (!supabaseClient || !state.session) return;
   if (state.marketRefreshing) {
+    if (options.lookupOnly) {
+      // A new ticker must not be lost behind an automatic full-portfolio refresh.
+      const deadline = Date.now() + 65000;
+      while (state.marketRefreshing && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!state.marketRefreshing) return refreshMarketPrices(options);
+      return;
+    }
     if (!options.quiet) {
       setMarketRefreshMessage("Refreshing market prices...");
       try {
         const data = await state.marketRefreshPromise;
-        await loadCloudLedger();
+        await reloadMarketPrices();
         renderAll();
         const refreshedPortfolio = calculatePortfolio();
         const complete = data?.complete === true && marketDataHealth(refreshedPortfolio).complete;
@@ -1728,7 +1749,7 @@ async function refreshMarketPrices(options = {}) {
     let reloadComplete = true;
     try {
       await Promise.race([
-        loadCloudLedger(),
+        reloadMarketPrices(),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Market data saved, but the app reload took too long.")), 15000))
       ]);
     } catch (reloadError) {
@@ -1937,27 +1958,31 @@ function wireTickerLookup(form, portfolio) {
   const input = form.elements.ticker;
   const holding = form.elements.holding;
   const status = form.querySelector(".lookup-status");
+  let request = 0;
+  let pendingTicker = "";
   const update = async () => {
     const ticker = input.value.trim().toUpperCase();
-    if (!ticker) return;
-    const quote = portfolio.prices.get(ticker);
-    const name = holdingNameMap[ticker] || quote?.yahoo_symbol || ticker;
-    if (!holding.value || holding.value === holdingNameMap[input.dataset.lastTicker]) holding.value = name;
-    input.dataset.lastTicker = ticker;
-    status.textContent = quote
-      ? `${name} · ${quote.currency} ${Number(quote.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}`
-      : name;
-    status.className = quote ? "lookup-status ok" : "lookup-status warn";
-    if (!quote && supabaseClient && state.session) {
-      status.textContent = `${name} · looking up price...`;
+    if (!ticker || pendingTicker === ticker) return;
+    const currentRequest = ++request;
+    pendingTicker = ticker;
+    let quote = marketPriceMap().get(ticker);
+    if ((!priceIsFresh(quote) || !quote?.metrics?.instrument) && supabaseClient && state.session) {
+      status.textContent = `${ticker} · looking up company and price...`;
       await refreshMarketPrices({ extraTickers: [ticker], lookupOnly: true, quiet: true });
-      const refreshedPortfolio = calculatePortfolio();
-      const refreshedQuote = refreshedPortfolio.prices.get(ticker);
-      status.textContent = refreshedQuote
-        ? `${name} · ${refreshedQuote.currency} ${Number(refreshedQuote.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}`
-        : name;
-      status.className = refreshedQuote ? "lookup-status ok" : "lookup-status warn";
+      quote = marketPriceMap().get(ticker);
     }
+    if (currentRequest !== request) return;
+    pendingTicker = "";
+    if (!form.isConnected || input.value.trim().toUpperCase() !== ticker) return;
+    const problem = quoteValidationError(quote);
+    const name = holdingNameMap[ticker] || quote?.metrics?.instrument?.name || ticker;
+    if (!holding.value || holding.value === holding.dataset.lookupName) holding.value = name;
+    holding.dataset.lookupName = name;
+    status.textContent = problem
+      ? `${ticker}: ${problem} For a London listing, use its Yahoo ticker ending .L.`
+      : `${quote.metrics?.instrument?.name || name} · ${quote.yahoo_symbol} · ${quote.metrics?.instrument?.exchange || ""} · ${quote.currency} ${Number(quote.price).toLocaleString(undefined, { maximumFractionDigits: 4 })} per share`;
+    status.className = problem ? "lookup-status warn" : "lookup-status ok";
+    saveTransactionDraft(form, "equity");
   };
   input.addEventListener("blur", () => update());
   input.addEventListener("change", () => update());
@@ -2075,6 +2100,7 @@ async function submitEquity(event, portfolio) {
       showFormError(form, errors[0], [errors[0].startsWith("Quantity") || errors[0].startsWith("Only") ? "quantity" : errors[0].startsWith("Price") ? "price" : "ticker"]);
       return;
     }
+    if (!(await confirmEquityQuote(row, form, portfolio.fx))) return;
     await insertRow("portfolio_transactions", row, "add");
     setSaveMessage("equity", `${data.type === "buy" ? "Buy" : "Sell"} saved: ${row.ticker} ${money(amountGbp)} at ${shortUkTime()} UK.`);
     state.pendingCashConfirm = { owner: data.owner, account: data.account };
@@ -2089,6 +2115,41 @@ async function submitEquity(event, portfolio) {
     state.busyForms.equity = false;
     setFormWorking(form, false);
   }
+}
+
+async function confirmEquityQuote(row, form, fxRate) {
+  const isNew = !activeRows(state.ledger.transactions).some((entry) => entry.ticker === row.ticker);
+  let quote = marketPriceMap().get(row.ticker);
+  if (isNew && (!priceIsFresh(quote) || !quote?.metrics?.instrument)) {
+    await refreshMarketPrices({ extraTickers: [row.ticker], lookupOnly: true, quiet: true });
+    quote = marketPriceMap().get(row.ticker);
+  }
+  const problem = quoteValidationError(quote);
+  if (isNew && (problem || !quote?.metrics?.instrument)) {
+    showFormError(form, `Verify this ticker before saving. ${problem || "Company and exchange details are missing."} Use the full Yahoo symbol, including .L for a London listing.`, ["ticker"]);
+    return false;
+  }
+  if (isNew) {
+    const instrument = quote.metrics.instrument;
+    const accepted = await appConfirm({
+      title: "Confirm the new holding",
+      message: `Yahoo identifies ${row.ticker} as ${instrument.name} (${quote.yahoo_symbol}, ${instrument.exchange}), currently ${quote.currency} ${Number(quote.price).toFixed(4)} per share. Your entry is ${row.quantity} shares at ${row.currency} ${row.price.toFixed(4)}. Confirm this is the same listing shown by your broker.`,
+      confirmLabel: "Confirm holding",
+    });
+    if (!accepted) return false;
+  }
+  if (!problem && row.date === todayIso()) {
+    const marketGbp = quote.currency === "USD" ? Number(quote.price) / fxRate : Number(quote.price);
+    const enteredGbp = row.currency === "USD" ? row.price / fxRate : row.price;
+    if (Math.abs(enteredGbp / marketGbp - 1) > 0.3) {
+      return appConfirm({
+        title: "Check the price per share",
+        message: `Your price (${row.currency} ${row.price.toFixed(4)}) differs by more than 30% from the verified market quote (${quote.currency} ${Number(quote.price).toFixed(4)}). GBP entries must be in pounds, not pence. Check the listing, currency and trade price before saving.`,
+        confirmLabel: "Confirm my trade price",
+      });
+    }
+  }
+  return true;
 }
 
 async function submitCashConfirmation(event, portfolio) {

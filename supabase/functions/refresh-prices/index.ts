@@ -1,17 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
+import { yahooSymbol, normaliseYahooQuote, fxHistoryMetrics } from "../../../market-instruments.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-const symbolMap: Record<string, string> = {
-  IAG: "IAG.L",
-  SGLN: "SGLN.L",
-  VUAA: "VUAA.L",
-  WXBT: "WXBT.L",
-  Crypto: "",
 };
 
 const quoteTimeoutMs = 7000;
@@ -26,12 +19,6 @@ type Quote = {
   fetched_at: string;
   source: string;
 };
-
-function yahooSymbol(ticker: string) {
-  if (symbolMap[ticker] !== undefined) return symbolMap[ticker];
-  if (ticker === "CASH") return "";
-  return ticker;
-}
 
 async function fetchYahooQuote(ticker: string): Promise<Quote | null> {
   const symbol = yahooSymbol(ticker);
@@ -54,44 +41,9 @@ async function fetchYahooQuote(ticker: string): Promise<Quote | null> {
   const payload = await response.json();
   const result = payload?.chart?.result?.[0];
   const meta = result?.meta;
-  const rawPrice = Number(meta?.regularMarketPrice ?? meta?.previousClose);
-  if (!Number.isFinite(rawPrice)) throw new Error(`${ticker}: Yahoo did not return a price`);
-
-  const rawCurrency = String(meta?.currency || "USD");
-  let currency = rawCurrency.toUpperCase();
-  let price = rawPrice;
-  if (rawCurrency === "GBp" || ["GBX", "GBPENCE", "GBP PENCE"].includes(currency)) {
-    currency = "GBP";
-    price = rawPrice / 100;
-  }
-
-  return {
-    ticker,
-    yahoo_symbol: symbol,
-    price,
-    currency,
-    market_time: meta?.regularMarketTime ? new Date(Number(meta.regularMarketTime) * 1000).toISOString() : null,
-    metrics: ticker === "GBPUSD=X" ? fxMetrics(result, price) : null,
-    fetched_at: new Date().toISOString(),
-    source: "Yahoo",
-  };
-}
-
-function fxMetrics(result: any, current: number) {
-  const timestamps = result?.timestamp || [];
-  const closes = result?.indicators?.quote?.[0]?.close || [];
-  const points = timestamps
-    .map((timestamp: number, index: number) => ({ date: new Date(timestamp * 1000), rate: Number(closes[index]) }))
-    .filter((point: { rate: number }) => Number.isFinite(point.rate));
-  const periods = [["d28", 28], ["m6", 183], ["y1", 365], ["y5", 1826]] as const;
-  return Object.fromEntries(periods.map(([key, days]) => {
-    const target = Date.now() - days * 86_400_000;
-    const previous = [...points].reverse().find((point) => point.date.getTime() <= target) || points[0];
-    return [key, {
-      rate: previous?.rate ?? null,
-      change_pct: previous?.rate ? (current - previous.rate) / previous.rate : null,
-    }];
-  }));
+  const quote = normaliseYahooQuote(ticker, meta);
+  if (ticker === "GBPUSD=X") Object.assign(quote.metrics, fxHistoryMetrics(result, quote.price));
+  return quote;
 }
 
 async function fetchQuotes(tickers: string[]) {
