@@ -4,12 +4,12 @@ import {
   orderedTransactions,
   quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-09-29-drawdown-alerts-1";
+} from "./portfolio-core.js?v=2026-09-29-drawdown-alerts-2";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-09-29-drawdown-alerts-1";
+const APP_VERSION = "2026-09-29-drawdown-alerts-2";
 
 const state = {
   session: null,
@@ -969,11 +969,12 @@ async function loadMember() {
   if (!members.error) state.members = members.data || [data];
 }
 
-async function selectAllRows(tableName, { orderBy = null, ascending = true, pageSize = 500 } = {}) {
+async function selectAllRows(tableName, { orderBy = null, ascending = true, pageSize = 500, filter = null } = {}) {
   const rows = [];
   for (let from = 0; ; from += pageSize) {
     let query = supabaseClient.from(tableName).select("*").range(from, from + pageSize - 1);
     if (orderBy) query = query.order(orderBy, { ascending });
+    if (filter) query = filter(query);
     const result = await query;
     if (result.error) return { data: null, error: result.error };
     rows.push(...(result.data || []));
@@ -983,8 +984,7 @@ async function selectAllRows(tableName, { orderBy = null, ascending = true, page
 }
 
 async function loadCloudLedger() {
-  const alertCutoff = new Date(Date.now() - 40 * 86400000).toISOString();
-  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses, holdingNameOverrides, reportSettings, reportRuns, drawdownQuotes, drawdownAlerts] = await Promise.all([
+  const [tx, manual, pensions, audit, prices, snapshots, portfolioSnapshots, appStatus, researchStatuses, holdingNameOverrides, reportSettings, reportRuns, drawdownQuotes, drawdownAlerts, drawdownReceipts] = await Promise.all([
     selectAllRows("portfolio_transactions", { orderBy: "created_at" }),
     selectAllRows("manual_values", { orderBy: "created_at" }),
     selectAllRows("pension_values", { orderBy: "created_at" }),
@@ -998,7 +998,8 @@ async function loadCloudLedger() {
     selectAllRows("portfolio_report_settings"),
     supabaseClient.from("portfolio_report_runs").select("*").order("created_at", { ascending: false }).limit(20),
     selectAllRows("drawdown_quotes"),
-    supabaseClient.from("drawdown_alerts").select("*").gte("created_at", alertCutoff).order("created_at", { ascending: false }).limit(1000)
+    selectAllRows("drawdown_alerts", { orderBy: "created_at", ascending: false }),
+    selectAllRows("drawdown_alert_receipts", { orderBy: "updated_at", ascending: false, filter: (query) => query.eq("user_id", state.session.user.id) })
   ]);
   for (const result of [tx, manual, pensions, audit, prices]) {
     if (result.error) throw result.error;
@@ -1021,9 +1022,6 @@ async function loadCloudLedger() {
   if (reportRuns.error && !missingReportRunsTable) throw reportRuns.error;
   if (drawdownQuotes.error && !missingDrawdownQuotesTable) throw drawdownQuotes.error;
   if (drawdownAlerts.error && !missingDrawdownAlertsTable) throw drawdownAlerts.error;
-  const drawdownReceipts = !missingDrawdownAlertsTable && drawdownAlerts.data?.length
-    ? await supabaseClient.from("drawdown_alert_receipts").select("*").eq("user_id", state.session.user.id).gte("updated_at", alertCutoff).order("updated_at", { ascending: false }).limit(1000)
-    : { data: [], error: null };
   const missingDrawdownReceiptsTable = drawdownReceipts.error && ["42P01", "PGRST205", "42501"].includes(drawdownReceipts.error.code);
   if (drawdownReceipts.error && !missingDrawdownReceiptsTable) throw drawdownReceipts.error;
   state.portfolioValueSnapshotsAvailable = !missingPortfolioSnapshotTable;
@@ -1289,12 +1287,17 @@ function renderDrawdownAlerts(portfolio) {
   for (const alert of state.ledger.drawdown_alerts || []) {
     if (active.has(alert.ticker) && !latest.has(alert.ticker)) latest.set(alert.ticker, alert);
   }
+  const quoteByTicker = new Map(quotes.map((row) => [row.ticker, row]));
+  const relevantAlerts = [...latest.values()].filter((alert) => {
+    const quote = quoteByTicker.get(alert.ticker);
+    return !quote || Number(quote.drawdown_pct) >= Number(alert.threshold_pct) - 2;
+  });
   const now = Date.now();
-  const pending = [...latest.values()].filter((alert) => {
+  const pending = relevantAlerts.filter((alert) => {
     const receipt = receipts.get(alert.id);
     return !receipt?.acknowledged_at && !(Date.parse(receipt?.snoozed_until || "") > now);
   });
-  const snoozed = [...latest.values()].filter((alert) => {
+  const snoozed = relevantAlerts.filter((alert) => {
     const receipt = receipts.get(alert.id);
     return !receipt?.acknowledged_at && Date.parse(receipt?.snoozed_until || "") > now;
   });
@@ -1317,7 +1320,8 @@ function renderDrawdownAlerts(portfolio) {
     const holding = active.get(row.ticker);
     const alert = latest.get(row.ticker);
     const receipt = receipts.get(alert?.id);
-    const status = !alert ? "Monitoring" : receipt?.acknowledged_at ? "Reviewed" : Date.parse(receipt?.snoozed_until || "") > now ? "Snoozed" : "Review";
+    const recovered = alert && Number(row.drawdown_pct) < Number(alert.threshold_pct) - 2;
+    const status = !alert || recovered ? "Monitoring" : receipt?.acknowledged_at ? "Reviewed" : Date.parse(receipt?.snoozed_until || "") > now ? "Snoozed" : "Review";
     return `<tr><td>${escapeHtml(row.ticker)}</td><td>${escapeHtml(displayHoldingName(row.ticker, holding?.holding || row.holding))}</td><td class="${Number(row.drawdown_pct) >= 10 ? "loss-text" : ""}">${Number(row.drawdown_pct).toFixed(1)}%</td><td>${row.currency === "GBP" ? "£" : "$"}${Number(row.close_price).toFixed(2)}</td><td>${displayDate(row.close_date)}</td><td>${status}</td></tr>`;
   }).join("");
   const latestCheck = quotes.reduce((value, row) => !value || row.checked_at > value ? row.checked_at : value, "");
