@@ -37,6 +37,10 @@ TABLES = [
     "portfolio_report_snapshots",
     "portfolio_report_holding_snapshots",
     "portfolio_report_runs",
+    "drawdown_quotes",
+    "drawdown_threshold_states",
+    "drawdown_alerts",
+    "drawdown_alert_receipts",
     "audit_log",
     "app_members",
 ]

@@ -19,9 +19,12 @@ Deploy these folders with their shared dependency:
 
 - `refresh-prices`, with JWT verification enabled.
 - `portfolio-telegram-reports`, retaining its existing scheduler authentication arrangement.
+- `portfolio-drawdown-alerts`, including `drawdown-core.js` and `market-instruments.js` from the repository root. JWT verification is disabled only because the function checks the existing private cron secret for scheduled runs and validates member JWTs for review and snooze actions.
 - `portfolio-core.js` at the repository root is used by both the browser and Telegram report function. Keep its relative path intact when deploying the Telegram function.
 
 Required function secrets and authentication settings remain in Supabase. They must never be placed in browser files or committed to GitHub.
+
+After deploying `portfolio-drawdown-alerts`, run a read-only `preview` through the existing cron secret and check the verified/skipped tickers. Only then apply `drawdown-alert-schedule.sql`. It schedules two after-close attempts, with the function enforcing the local UK/Lisbon window. The new drawdown tables are included in Dropbox backup and restore.
 
 ## Release Check
 

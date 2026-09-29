@@ -34,6 +34,10 @@ TABLE_ORDER = [
     "portfolio_report_snapshots",
     "portfolio_report_holding_snapshots",
     "portfolio_report_runs",
+    "drawdown_quotes",
+    "drawdown_threshold_states",
+    "drawdown_alerts",
+    "drawdown_alert_receipts",
     "audit_log",
 ]
 
@@ -52,6 +56,10 @@ CONFLICT_COLUMNS = {
     "portfolio_report_snapshots": "snapshot_key",
     "portfolio_report_holding_snapshots": "id",
     "portfolio_report_runs": "id",
+    "drawdown_quotes": "ticker",
+    "drawdown_threshold_states": "ticker,threshold_pct",
+    "drawdown_alerts": "id",
+    "drawdown_alert_receipts": "alert_id,user_id",
     "audit_log": "id",
 }
 
