@@ -4,12 +4,12 @@ import {
   orderedTransactions,
   quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-10-02-pension-save-1";
+} from "./portfolio-core.js?v=2026-10-02-alert-snooze-1";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-10-02-pension-save-1";
+const APP_VERSION = "2026-10-02-alert-snooze-1";
 
 const state = {
   session: null,
@@ -1326,7 +1326,7 @@ function renderDrawdownAlerts(portfolio) {
     return `<div class="drawdown-alert-row" data-alert-id="${escapeHtml(alert.id)}">
       <div class="drawdown-alert-copy"><strong>${escapeHtml(alert.ticker)} · ${escapeHtml(displayHoldingName(alert.ticker, holding?.holding || alert.holding))}</strong>
         <span>Closed ${Number(alert.drawdown_pct).toFixed(1)}% below its ${highLabel} on ${displayDate(alert.close_date)}. ${Number(alert.threshold_pct)}% review level.</span></div>
-      <div class="drawdown-alert-actions"><button type="button" class="secondary small" data-drawdown-action="acknowledge" title="Mark this alert reviewed"><i data-lucide="check"></i><span>Reviewed</span></button>
+      <div class="drawdown-alert-actions"><button type="button" class="secondary small" data-drawdown-action="acknowledge" title="Mark this alert reviewed"><i data-lucide="check"></i><span>Mark reviewed</span></button>
         <label class="drawdown-snooze-label">Snooze <select aria-label="Snooze ${escapeHtml(alert.ticker)} for"><option value="1">1 day</option><option value="3">3 days</option><option value="7">7 days</option><option value="28">28 days</option></select></label>
         <button type="button" class="secondary small" data-drawdown-action="snooze" title="Snooze this alert"><i data-lucide="clock-3"></i><span>Snooze</span></button></div>
     </div>`;
@@ -1363,24 +1363,33 @@ function bindDrawdownAlertActions() {
     const buttons = row.querySelectorAll("button");
     buttons.forEach((item) => { item.disabled = true; });
     const days = Number(row.querySelector("select")?.value || 0);
-    const { data, error } = await supabaseClient.functions.invoke("portfolio-drawdown-alerts", { body: { action, alert_id: row.dataset.alertId, days } });
-    if (error || !data?.ok) {
+    try {
+      const { data, error } = await supabaseClient.functions.invoke("portfolio-drawdown-alerts", { body: { action, alert_id: row.dataset.alertId, days } });
+      if (error || !data?.ok || !data.receipt?.alert_id) {
+        let message = data?.error || error?.message || "Could not confirm the alert update. Please try again.";
+        if (typeof error?.context?.json === "function") {
+          const detail = await error.context.json().catch(() => null);
+          message = detail?.error || message;
+        }
+        throw new Error(message);
+      }
+      const receipts = state.ledger.drawdown_alert_receipts;
+      const index = receipts.findIndex((item) => item.alert_id === data.receipt.alert_id);
+      if (index < 0) receipts.push(data.receipt);
+      else receipts[index] = data.receipt;
+      state.drawdownMessage = action === "snooze" ? `Alert snoozed for ${days} ${days === 1 ? "day" : "days"}. A deeper level can still alert you.`
+        : action === "resume" ? "Alert resumed." : "Alert marked reviewed.";
+      renderDashboard(calculatePortfolio());
+      window.setTimeout(() => {
+        state.drawdownMessage = "";
+        const feedback = el("portfolio-alerts")?.querySelector(".notice.success");
+        if (feedback) feedback.remove();
+      }, 10000);
+    } catch (error) {
+      announce(`Alert could not be updated: ${error.message || "Please try again."}`, "error");
+    } finally {
       buttons.forEach((item) => { item.disabled = false; });
-      announce(`Alert could not be updated: ${data?.error || error?.message || "Please try again."}`, "error");
-      return;
     }
-    const receipts = state.ledger.drawdown_alert_receipts;
-    const index = receipts.findIndex((item) => item.alert_id === data.receipt.alert_id);
-    if (index < 0) receipts.push(data.receipt);
-    else receipts[index] = data.receipt;
-    state.drawdownMessage = action === "snooze" ? `Alert snoozed for ${days} ${days === 1 ? "day" : "days"}. A deeper level can still alert you.`
-      : action === "resume" ? "Alert resumed." : "Alert marked reviewed.";
-    renderDashboard(calculatePortfolio());
-    window.setTimeout(() => {
-      state.drawdownMessage = "";
-      const feedback = el("portfolio-alerts")?.querySelector(".notice.success");
-      if (feedback) feedback.remove();
-    }, 10000);
   }));
 }
 

@@ -7,7 +7,8 @@ type Row = Record<string, any>;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-cron-secret",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-secret",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const TIME_ZONE = "Europe/Lisbon";
 const APP_URL = "https://benashy.github.io/benji-angie-share-portfolio/#portfolio-alerts";
