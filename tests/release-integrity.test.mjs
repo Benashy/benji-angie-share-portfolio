@@ -19,6 +19,15 @@ test("market refresh function and reliability migration are version controlled",
   assert.ok(existsSync("portfolio-core.js"));
 });
 
+test("the shared audit trigger reads optional fields from JSON rather than table records", () => {
+  const migration = readFileSync("supabase/migrations/20261002151734_fix_optional_audit_fields.sql", "utf8");
+  assert.match(migration, /security invoker/);
+  assert.match(migration, /new_value ->> 'notes'/);
+  assert.match(migration, /old_value ->> 'deleted_at'/);
+  assert.match(migration, /new_value ->> 'deleted_at'/);
+  assert.doesNotMatch(migration, /\b(?:new|old)\.(?:notes|deleted_at)\b/i);
+});
+
 test("browser assets use pinned third-party versions", () => {
   assert.doesNotMatch(index, /@supabase\/supabase-js@2\/dist/);
   assert.match(index, /@supabase\/supabase-js@2\.57\.4/);

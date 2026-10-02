@@ -4,12 +4,12 @@ import {
   orderedTransactions,
   quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-09-29-drawdown-alerts-2";
+} from "./portfolio-core.js?v=2026-10-02-pension-save-1";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-09-29-drawdown-alerts-2";
+const APP_VERSION = "2026-10-02-pension-save-1";
 
 const state = {
   session: null,
@@ -730,22 +730,38 @@ function shortUkTime(value = new Date()) {
   });
 }
 
-function setSaveMessage(area, text, tone = "success") {
+function clearSaveMessage(area) {
   if (state.saveTimers[area]) window.clearTimeout(state.saveTimers[area]);
+  delete state.saveTimers[area];
+  delete state.saveMessages[area];
+  document.querySelector(`[data-save-area="${area}"]`)?.remove();
+}
+
+function setSaveMessage(area, text, tone = "success") {
+  clearSaveMessage(area);
   state.saveMessages[area] = { text, tone };
   state.saveMessage = text;
   state.saveArea = area;
-  state.saveTimers[area] = window.setTimeout(() => {
-    delete state.saveMessages[area];
-    const banner = document.querySelector(`[data-save-area="${area}"]`);
-    if (banner) banner.remove();
-  }, 10000);
+  const panel = el(`${area}Panel`);
+  const heading = panel?.querySelector("h2");
+  if (heading) {
+    const banner = document.createElement("div");
+    banner.className = `save-banner ${tone === "error" ? "save-error" : tone === "warning" ? "save-warning" : ""}`;
+    banner.dataset.saveArea = area;
+    banner.setAttribute("role", tone === "error" ? "alert" : "status");
+    banner.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+    banner.textContent = text;
+    heading.after(banner);
+  }
+  if (tone !== "error") {
+    state.saveTimers[area] = window.setTimeout(() => clearSaveMessage(area), 10000);
+  }
 }
 
 function saveBanner(area) {
   const message = state.saveMessages[area];
   if (!message) return "";
-  return `<div class="save-banner ${message.tone === "error" ? "save-error" : message.tone === "warning" ? "save-warning" : ""}" data-save-area="${area}" role="status" aria-live="polite">${escapeHtml(message.text)}</div>`;
+  return `<div class="save-banner ${message.tone === "error" ? "save-error" : message.tone === "warning" ? "save-warning" : ""}" data-save-area="${area}" role="${message.tone === "error" ? "alert" : "status"}" aria-live="${message.tone === "error" ? "assertive" : "polite"}">${escapeHtml(message.text)}</div>`;
 }
 
 function readTransactionDrafts() {
@@ -800,7 +816,10 @@ function restoreTransactionDraft(form, key) {
 
 function wireTransactionDraft(form, key) {
   ["input", "change"].forEach((eventName) => {
-    form.addEventListener(eventName, () => saveTransactionDraft(form, key));
+    form.addEventListener(eventName, () => {
+      if (state.saveMessages[key]?.tone === "error") clearSaveMessage(key);
+      saveTransactionDraft(form, key);
+    });
   });
 }
 
@@ -2191,6 +2210,7 @@ async function submitEquity(event, portfolio) {
   const form = event.currentTarget;
   setFormWorking(form, true);
   try {
+    clearSaveMessage("equity");
     clearFormError(form);
     const data = Object.fromEntries(new FormData(form).entries());
     if (!(await confirmBackdatedUsdFx(data, portfolio.fx))) return;
@@ -2330,6 +2350,7 @@ async function submitCash(event, portfolio) {
   const form = event.currentTarget;
   setFormWorking(form, true);
   try {
+    clearSaveMessage("cash");
     clearFormError(form);
     const data = Object.fromEntries(new FormData(form).entries());
     if (!(await confirmBackdatedUsdFx(data, portfolio.fx))) return;
@@ -2382,6 +2403,7 @@ async function submitManual(event, portfolio) {
   const form = event.currentTarget;
   setFormWorking(form, true);
   try {
+    clearSaveMessage("manual");
     clearFormError(form);
     const data = Object.fromEntries(new FormData(form).entries());
     const entered = Number(data.value);
