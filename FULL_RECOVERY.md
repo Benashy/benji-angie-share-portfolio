@@ -35,6 +35,10 @@ a new encrypted kit rather than overwriting the original. Check the two underlyi
 users are the only intended accounts and separately preserve platform recovery
 codes for GitHub, Supabase, Dropbox and the Telegram bot owner's account.
 
+Use a Supabase project-scoped management token with read access to the Auth
+configuration and secret metadata only. This is not the frontend publishable key
+or the database backup key. The setup never uses that token to change settings.
+
 The complete status must not be claimed while bot credentials, Auth settings or
 account-recovery access remain unchecked. MFA, external identity providers and
 Storage objects are explicitly rejected rather than silently omitted. If they are

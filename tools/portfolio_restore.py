@@ -91,8 +91,8 @@ $guard$;
 """
 
 
-def build_schema_sql(project_ref: str, system_id: str) -> str:
-    root = Path(__file__).resolve().parents[1]
+def build_schema_sql(project_ref: str, system_id: str, root: Path | None = None) -> str:
+    root = root or Path(__file__).resolve().parents[1]
     preflight = """DO $empty$
 BEGIN
   IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public') THEN

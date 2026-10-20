@@ -59,7 +59,7 @@ select jsonb_build_object(
  'source_project', '{PRODUCTION_PROJECT_REF}', 'captured_at', now(),
  'portfolio', jsonb_build_object({tables}),
  'auth_users', (select coalesce(jsonb_agg(to_jsonb(u)-'confirmed_at'), '[]'::jsonb) from auth.users u where id in (select user_id from public.app_members)),
- 'auth_identities', (select coalesce(jsonb_agg(i), '[]'::jsonb) from auth.identities i where user_id in (select user_id from public.app_members)),
+ 'auth_identities', (select coalesce(jsonb_agg(to_jsonb(i)-'email'), '[]'::jsonb) from auth.identities i where user_id in (select user_id from public.app_members)),
  'verified_mfa', (select count(*) from auth.mfa_factors where status='verified'),
  'non_email_identities', (select count(*) from auth.identities where provider<>'email'),
  'storage_objects', (select count(*) from storage.objects),
@@ -152,6 +152,10 @@ def auth_restore_sql(snapshot: dict, project: str, system_id: str, test_password
     validate_snapshot(snapshot)
     users, identities = json.loads(json.dumps([snapshot["auth_users"], snapshot["auth_identities"]]))
     for row in users:
+        row.pop("confirmed_at", None)
+    for row in identities:
+        row.pop("email", None)
+    for row in users:
         for field in ("confirmation_token", "recovery_token", "email_change_token_new", "email_change_token_current", "reauthentication_token", "phone_change_token"):
             if field in row:
                 row[field] = ""
@@ -182,7 +186,8 @@ END $empty$;
         parts.append(f"INSERT INTO auth.{table} ({names}) SELECT {names} FROM jsonb_populate_recordset(NULL::auth.{table}, {json_literal(rows)});\n")
     if test_password is not None:
         safe_password = test_password.replace("'", "''")
-        parts.append(f"UPDATE auth.users SET encrypted_password=extensions.crypt('{safe_password}',extensions.gen_salt('bf'));\n")
+        ids = ",".join("'" + row["id"].replace("'", "''") + "'" for row in users)
+        parts.append(f"UPDATE auth.users SET encrypted_password=extensions.crypt('{safe_password}',extensions.gen_salt('bf')) WHERE id IN ({ids});\n")
     parts.append("COMMIT;\n")
     return "".join(parts)
 
@@ -217,6 +222,21 @@ REVOKE ALL ON FUNCTION public.portfolio_report_cron_secret_matches(text) FROM PU
 GRANT EXECUTE ON FUNCTION public.portfolio_report_cron_secret_matches(text) TO service_role;
 COMMIT;
 """
+
+
+def integrity_restore_sql(project: str, system_id: str, root: Path | None = None) -> str:
+    root = root or Path(__file__).resolve().parents[1]
+    post = []
+    for name in ("20260819010000_non_security_reliability.sql", "20261002151734_fix_optional_audit_fields.sql"):
+        # This path is fresh-target only. Refuse existing application triggers
+        # rather than removing them, preserving an accidental populated target.
+        post.append("\n".join(line for line in (root / "supabase/migrations" / name).read_text().splitlines() if not re.search(r"\bdrop (trigger|constraint)\b", line, re.I)))
+    preflight = """DO $fresh$ BEGIN
+IF EXISTS(SELECT FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE c.relnamespace='public'::regnamespace AND NOT t.tgisinternal) THEN
+ RAISE EXCEPTION 'Install integrity checks only on the fresh recovery schema'; END IF;
+END $fresh$;
+"""
+    return guard_sql(project, system_id) + "SET LOCAL search_path=public,extensions;\n" + preflight + "\n".join(post) + "\nCOMMIT;\n"
 
 
 def http_json(url: str, *, token: str | None = None) -> dict:
@@ -263,14 +283,10 @@ def prepare(payload: dict, output: Path, project: str, system_id: str, publishab
             raise ValueError("Wrong target publishable key")
     extract_source(payload, output / "source")
     snapshot = payload["snapshot"]
-    write_private_sql(output / "01-schema.sql", build_schema_sql(project, system_id))
+    write_private_sql(output / "01-schema.sql", build_schema_sql(project, system_id, output / "source"))
     write_private_sql(output / "02-auth.sql", auth_restore_sql(snapshot, project, system_id))
     write_private_sql(output / "03-data.sql", build_restore_sql(snapshot["portfolio"], project, system_id))
-    root = Path(__file__).resolve().parents[1]
-    post = []
-    for name in ("20260819010000_non_security_reliability.sql", "20261002151734_fix_optional_audit_fields.sql"):
-        post.append((root / "supabase/migrations" / name).read_text())
-    write_private_sql(output / "04-integrity.sql", guard_sql(project, system_id) + "SET LOCAL search_path=public,extensions;\n" + "\n".join(post) + "\nCOMMIT;\n")
+    write_private_sql(output / "04-integrity.sql", integrity_restore_sql(project, system_id, output / "source"))
     write_private_sql(output / "05-services.sql", service_restore_sql(project, system_id))
     write_private_sql(output / "06-disabled-schedules.sql", schedule_restore_sql(snapshot, project, system_id))
     # Never publish the recovered user's real configuration until an explicit
@@ -309,13 +325,14 @@ globalThis.fetch = async (input: any, init?: any) => {
     const price = Number(row.price)*divisor;
     const currency = divisor === 100 ? 'GBp' : row.currency;
     const timestamp = [Math.floor(__clock/1000)-86400*365, Math.floor(__clock/1000)-86400, Math.floor(__clock/1000)];
-    return Response.json({chart:{error:null,result:[{meta:{symbol,currency,regularMarketPrice:price,regularMarketTime:Math.floor(__clock/1000),exchangeName:symbol.endsWith('.L')?'LSE':'NMS',instrumentType:'EQUITY',longName:row.ticker,fiftyTwoWeekHigh:price*1.4},timestamp,indicators:{quote:[{close:[price*1.4,price,price]}]}}]}});
+    return Response.json({chart:{error:null,result:[{meta:{symbol,currency,regularMarketPrice:price,regularMarketTime:Math.floor(__clock/1000),exchangeName:symbol.endsWith('.L')?'LSE':'NMS',instrumentType:'EQUITY',longName:instrument.name || row.ticker,fiftyTwoWeekHigh:price*1.4},timestamp,indicators:{quote:[{close:[price*1.4,price,price]}]}}]}});
   }
   if (url.hostname !== 'TARGET.supabase.co') throw new Error('Recovery test blocked an unexpected outbound destination');
   return __networkFetch(input,init);
 };
 const __serve = Deno.serve.bind(Deno);
 Deno.serve = ((handler: any) => __serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') return new Response('ok', {headers:{'Access-Control-Allow-Origin':'http://127.0.0.1:8539','Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'authorization,apikey,content-type,x-client-info,x-recovery-test,x-recovery-clock'}});
   if (req.headers.get('x-recovery-test') !== 'GATE') return Response.json({error:'Private recovery test'}, {status:403});
   const clock = req.headers.get('x-recovery-clock');
   if (clock) { const value = __realDate.parse(clock); if (!Number.isFinite(value)) return Response.json({error:'Invalid clock'}, {status:400}); __clock=value; }

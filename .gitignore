@@ -2,6 +2,8 @@ tools/portfolio_backup.env
 *.env
 restore-*.sql
 recovery-private/
+.recovery-reader/
+*.pfk
 node_modules/
 __pycache__/
 *.pyc

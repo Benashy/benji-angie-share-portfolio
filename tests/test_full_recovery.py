@@ -62,6 +62,13 @@ class FullRecoveryTests(unittest.TestCase):
         self.assertIn("recovery-one@example.invalid",sql)
         self.assertEqual(self.snapshot["auth_users"][0]["encrypted_password"],"hash-one")
 
+    def test_auth_generated_columns_are_not_inserted(self):
+        for user in self.snapshot["auth_users"]: user["confirmed_at"]="generated"
+        for identity in self.snapshot["auth_identities"]: identity["email"]="generated"
+        sql=recovery.auth_restore_sql(self.snapshot,self.project,self.system)
+        self.assertNotIn('"confirmed_at"',sql)
+        self.assertNotIn('"email"',sql.split("INSERT INTO auth.identities")[1].split("SELECT")[0])
+
     def test_schedules_are_atomic_and_inactive(self):
         sql=recovery.schedule_restore_sql(self.snapshot,self.project,self.system)
         self.assertNotIn(recovery.PRODUCTION_PROJECT_REF,sql)
@@ -72,6 +79,12 @@ class FullRecoveryTests(unittest.TestCase):
         sql=recovery.service_restore_sql(self.project,self.system)
         self.assertIn("gen_random_bytes(32)",sql)
         self.assertIn("FROM PUBLIC,anon,authenticated",sql)
+
+    def test_integrity_setup_does_not_remove_objects(self):
+        sql=recovery.integrity_restore_sql(self.project,self.system)
+        self.assertNotIn("drop trigger",sql.lower())
+        self.assertNotIn("drop constraint",sql.lower())
+        self.assertIn("fresh recovery schema",sql)
 
     def test_encryption_tamper_and_wrong_key(self):
         key=Fernet.generate_key()
