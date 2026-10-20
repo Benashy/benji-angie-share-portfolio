@@ -1,4 +1,7 @@
 tools/portfolio_backup.env
+*.env
+restore-*.sql
+recovery-private/
 node_modules/
 __pycache__/
 *.pyc

@@ -4,12 +4,12 @@ import {
   orderedTransactions,
   quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-10-02-alert-snooze-1";
+} from "./portfolio-core.js?v=2026-10-20-recovery-1";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-10-02-alert-snooze-1";
+const APP_VERSION = "2026-10-20-recovery-1";
 
 const state = {
   session: null,

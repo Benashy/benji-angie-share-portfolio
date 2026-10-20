@@ -179,6 +179,7 @@ grant select, insert, update on public.portfolio_transactions to authenticated;
 grant select, insert, update on public.manual_values to authenticated;
 grant select, insert, update on public.pension_values to authenticated;
 grant select, insert on public.audit_log to authenticated;
+grant select on public.audit_log to service_role;
 grant select, insert, update on public.market_prices to authenticated;
 grant select, insert, update on public.net_worth_snapshots to authenticated;
 grant select, insert, update on public.portfolio_value_snapshots to authenticated;

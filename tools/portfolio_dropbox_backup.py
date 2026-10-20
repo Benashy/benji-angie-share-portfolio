@@ -192,7 +192,7 @@ def write_backup_files(directory: Path, data: dict[str, list[dict]], created_at:
     return manifest
 
 
-def verify_backup_directory(directory: Path) -> dict:
+def verify_backup_directory(directory: Path, required_tables: list[str] | None = None) -> dict:
     manifest_path = directory / "backup-manifest.json"
     backup_path = directory / "portfolio-backup.json"
     if not manifest_path.exists() or not backup_path.exists():
@@ -202,10 +202,18 @@ def verify_backup_directory(directory: Path) -> dict:
         raise RuntimeError(f"Backup verification failed: unsupported format in {directory}")
     data = json.loads(backup_path.read_text(encoding="utf-8"))
     actual_counts = {table: len(rows) for table, rows in data.items()}
+    if required_tables and not set(required_tables).issubset(data):
+        raise RuntimeError("Backup verification failed: required portfolio tables are missing")
     if actual_counts != manifest.get("tables"):
         raise RuntimeError(f"Backup verification failed: table counts do not match in {directory}")
-    for name, expected_hash in manifest.get("files", {}).items():
+    checksums = manifest.get("files")
+    required_files = {"portfolio-backup.json", "portfolio-summary.txt", *[f"{table}.csv" for table in data]}
+    if not isinstance(checksums, dict) or not required_files.issubset(checksums):
+        raise RuntimeError(f"Backup verification failed: required checksums are missing in {directory}")
+    for name, expected_hash in checksums.items():
         path = directory / name
+        if Path(name).name != name or not path.resolve().is_relative_to(directory.resolve()):
+            raise RuntimeError("Backup verification failed: unsafe file path in manifest")
         if not path.exists() or file_sha256(path) != expected_hash:
             raise RuntimeError(f"Backup verification failed: checksum mismatch for {name}")
     return manifest
@@ -304,7 +312,7 @@ def complete_daily_backup_today(root: Path, today_key: str) -> bool:
         return False
     for backup_dir in daily_root.glob(f"{today_key}-*"):
         try:
-            verify_backup_directory(backup_dir)
+            verify_backup_directory(backup_dir, required_tables=TABLES)
             return True
         except (OSError, RuntimeError, json.JSONDecodeError):
             continue
@@ -312,12 +320,7 @@ def complete_daily_backup_today(root: Path, today_key: str) -> bool:
 
 
 def successful_backup_today(latest_dir: Path, today_key: str) -> bool:
-    marker = latest_dir / "last-successful-backup.json"
-    try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return data.get("date") == today_key
+    return local_successful_backup_today(latest_dir / "last-successful-backup.json", today_key)
 
 
 def local_successful_backup_today(marker: Path, today_key: str) -> bool:
@@ -325,7 +328,13 @@ def local_successful_backup_today(marker: Path, today_key: str) -> bool:
         data = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return data.get("date") == today_key
+    if data.get("date") != today_key or not data.get("daily_backup"):
+        return False
+    try:
+        verify_backup_directory(Path(data["daily_backup"]), required_tables=TABLES)
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
 
 
 def write_success_marker(latest_dir: Path, now: datetime, daily_dir: Path) -> None:

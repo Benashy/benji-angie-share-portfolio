@@ -10,8 +10,8 @@ For a new project:
 
 1. Apply `supabase-schema.sql`.
 2. Apply the feature setup SQL files in the repository root.
-3. Apply every file in `supabase/migrations` in filename order.
-4. Verify expected table columns, constraints and triggers before importing data.
+3. For a backup recovery, use the guarded schema/data preparation in `tools/portfolio_restore.py` and follow `RECOVERY.md`. Import into the fresh tables before adding application audit/integrity triggers, so historical rows do not create new audit events or depend on insert order.
+4. Install the remaining reliability and audit migrations, then verify columns, constraints, grants, triggers and member-specific RLS. Delta migrations are not a standalone empty-project bootstrap.
 
 ## Edge Functions
 
