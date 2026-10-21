@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -18,7 +19,7 @@ import subprocess
 import sys
 import tarfile
 from datetime import datetime, timezone
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from cryptography.fernet import Fernet
@@ -33,6 +34,10 @@ FORMAT = "portfolio-full-recovery-v1"
 BOT_NAME = "SharePortfolioReminderBot"
 EXPECTED_JOBS = {"portfolio-telegram-reports", "portfolio-drawdown-close", "portfolio-drawdown-retry"}
 FUNCTIONS = {"refresh-prices": True, "portfolio-telegram-reports": False, "portfolio-drawdown-alerts": False}
+
+
+class RecoveryCheckError(ValueError):
+    """A fixed, credential-free explanation safe to display in Terminal."""
 
 
 def private_write(path: Path, data: bytes) -> None:
@@ -239,7 +244,7 @@ END $fresh$;
     return guard_sql(project, system_id) + "SET LOCAL search_path=public,extensions;\n" + preflight + "\n".join(post) + "\nCOMMIT;\n"
 
 
-def http_json(url: str, *, token: str | None = None) -> dict:
+def http_json(url: str, *, token: str | None = None) -> dict | list:
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -248,23 +253,56 @@ def http_json(url: str, *, token: str | None = None) -> dict:
             return json.load(response)
     except HTTPError as exc:
         # Do not include URLs, API responses or exception traces containing keys.
-        raise RuntimeError(f"Private configuration check failed (HTTP {exc.code}).") from None
+        if exc.code in (401, 403):
+            detail = "Check the existing token and its read permissions. Do not regenerate the bot token."
+        else:
+            detail = "The service did not complete the read-only check."
+        raise RecoveryCheckError(f"Private configuration check failed (HTTP {exc.code}). {detail}") from None
+    except (URLError, TimeoutError, OSError):
+        raise RecoveryCheckError("Could not connect for the private configuration check. Check the Mac's internet connection.") from None
+    except (json.JSONDecodeError, UnicodeError):
+        raise RecoveryCheckError("The service returned an unreadable configuration response. No credentials have been saved.") from None
 
 
-def complete_kit(payload: dict, bot_token: str, management_token: str) -> dict:
+def verify_bot_secret(secret_metadata: list, bot_token: str) -> None:
+    if not isinstance(secret_metadata, list) or any(not isinstance(row, dict) for row in secret_metadata):
+        raise RecoveryCheckError("Supabase returned an unexpected secret-list format. Stop here and report this message.")
+    matching = [row for row in secret_metadata if row.get("name") == "PORTFOLIO_TELEGRAM_BOT_TOKEN"]
+    if len(matching) != 1:
+        raise RecoveryCheckError("The portfolio's deployed Telegram secret could not be identified. No live settings were changed.")
+    # The Management API calls the SHA-256 fingerprint 'value', not 'digest'.
+    # Accept the older metadata spelling too, but never accept a raw token here.
+    row = matching[0]
+    fingerprints = [row[name] for name in ("value", "digest") if row.get(name) is not None]
+    if not fingerprints or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value) for value in fingerprints):
+        raise RecoveryCheckError("Supabase returned an unrecognised Telegram token fingerprint. Stop here and report this message.")
+    actual = hashlib.sha256(bot_token.encode()).hexdigest()
+    if any(not hmac.compare_digest(value.lower(), actual) for value in fingerprints):
+        raise RecoveryCheckError("The copied Telegram token does not match the one deployed for this portfolio. Copy its existing token from BotFather; do not revoke or regenerate it.")
+
+
+def complete_kit(payload: dict, bot_token: str, management_token: str, *, progress=None) -> dict:
+    report = progress or (lambda message: None)
     if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", bot_token):
-        raise ValueError("That does not look like a Telegram bot token")
+        raise RecoveryCheckError("The Telegram token format was not recognised. Copy the entire number:code token, without surrounding text or spaces.")
+    if not management_token:
+        raise RecoveryCheckError("The Supabase management token was empty. Paste it into the second hidden prompt.")
+    report("Checking Telegram bot identity...")
     bot = http_json(f"https://api.telegram.org/bot{bot_token}/getMe")
-    if not bot.get("ok") or bot.get("result", {}).get("username", "").lower() != BOT_NAME.lower():
-        raise ValueError("The token belongs to a different Telegram bot")
+    if not isinstance(bot, dict) or not bot.get("ok") or not isinstance(bot.get("result"), dict) or str(bot["result"].get("username", "")).lower() != BOT_NAME.lower():
+        raise RecoveryCheckError("This is not the SharePortfolioReminderBot token. Copy the existing token for that bot, without regenerating it.")
+    report("Telegram bot identity confirmed. Reading Supabase login configuration...")
     base = f"https://api.supabase.com/v1/projects/{PRODUCTION_PROJECT_REF}"
     auth = http_json(base + "/config/auth", token=management_token)
+    if not isinstance(auth, dict) or not auth:
+        raise RecoveryCheckError("Supabase returned an unexpected login-configuration format. Stop here and report this message.")
+    report("Login configuration received. Checking the deployed Telegram token fingerprint...")
     secret_metadata = http_json(base + "/secrets", token=management_token)
-    expected = next((s.get("digest") for s in secret_metadata if s.get("name") == "PORTFOLIO_TELEGRAM_BOT_TOKEN"), None)
-    if not expected or expected != hashlib.sha256(bot_token.encode()).hexdigest():
-        raise ValueError("The supplied token does not match the deployed portfolio bot token")
-    if auth.get("smtp_host") and (not auth.get("smtp_pass") or "***" in auth["smtp_pass"]):
-        raise ValueError("Custom email service password must be added privately before this kit is complete")
+    verify_bot_secret(secret_metadata, bot_token)
+    smtp_pass = auth.get("smtp_pass")
+    if auth.get("smtp_host") and (not isinstance(smtp_pass, str) or not smtp_pass or "***" in smtp_pass):
+        raise RecoveryCheckError("The custom email-service password was not returned. It must be added privately before completing the kit; stop here and report this message.")
+    report("Deployed token confirmed. Preparing the encrypted recovery kit...")
     result = json.loads(json.dumps(payload))
     result["secrets"]["PORTFOLIO_TELEGRAM_BOT_TOKEN"] = bot_token
     result["auth_config"] = auth
@@ -399,9 +437,11 @@ def main() -> int:
         payload = open_kit(args.kit, key)
         bot_token = getpass.getpass("Existing Share Portfolio Telegram bot token (hidden): ").strip()
         management_token = getpass.getpass("Supabase project-scoped management token (hidden, not retained): ").strip()
-        result = complete_kit(payload, bot_token, management_token)
+        result = complete_kit(payload, bot_token, management_token, progress=lambda message: print(message, flush=True))
         private_write(args.output, seal(result, key))
-        print("Credentials checked without sending messages. Completed encrypted kit saved.")
+        open_kit(args.output, key)
+        print("Credentials checked without sending messages. Completed encrypted kit saved and verified.")
+        print(f"Saved file: {args.output}")
         print("Separately check that GitHub, Supabase, Dropbox and Telegram account recovery codes are in your password manager.")
     elif args.action == "prepare":
         prepare(open_kit(args.kit, key), args.output, args.target_project, args.target_system_id, args.target_publishable_key)
@@ -412,9 +452,19 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def run_cli() -> int:
     try:
-        raise SystemExit(main())
+        return main()
+    except RecoveryCheckError as error:
+        print(f"Recovery check stopped: {error}\nNo live changes were made.", file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("Recovery check cancelled. No live changes were made.", file=sys.stderr)
+        return 1
     except Exception as error:
         print(f"Recovery tool stopped: {type(error).__name__}. No live changes were made.", file=sys.stderr)
-        raise SystemExit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_cli())

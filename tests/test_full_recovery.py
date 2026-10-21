@@ -1,5 +1,7 @@
 import base64
 import copy
+from contextlib import redirect_stderr, redirect_stdout
+import hashlib
 import importlib.util
 import io
 import json
@@ -9,6 +11,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 AVAILABLE = all(importlib.util.find_spec(name) for name in ("cryptography", "pgpy"))
@@ -103,13 +106,112 @@ class FullRecoveryTests(unittest.TestCase):
 
     def test_no_telegram_send_in_completion(self):
         token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
-        import hashlib
-        responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}},{"smtp_host":None},[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","digest":hashlib.sha256(token.encode()).hexdigest()}]]
+        responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}},{"smtp_host":None},[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]]
         with patch.object(recovery,"http_json",side_effect=responses) as request:
             result=recovery.complete_kit({"pending":[],"secrets":{}},token,"temporary-management-token")
         self.assertTrue(all("sendMessage" not in call.args[0] for call in request.call_args_list))
         self.assertNotIn("temporary-management-token",json.dumps(result))
         self.assertEqual(result["pending"],["external_account_recovery_codes"])
+
+    def test_current_and_legacy_secret_fingerprint_fields(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        fingerprint=hashlib.sha256(token.encode()).hexdigest()
+        for fields in ({"value":fingerprint},{"digest":fingerprint},{"value":fingerprint.upper()},{"value":fingerprint,"digest":fingerprint}):
+            with self.subTest(fields=list(fields)):
+                recovery.verify_bot_secret([{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN",**fields}],token)
+
+    def test_invalid_secret_metadata_fails_closed_without_disclosing_tokens(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        row={"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}
+        examples=[None,{},[None],[],[row,row],[{"name":"another-secret","value":row["value"]}],
+                  [{"name":row["name"]}],[{**row,"value":token}],[{**row,"value":"0"*64}],
+                  [{**row,"digest":"0"*64}],[{**row,"value":123}]]
+        for metadata in examples:
+            with self.subTest(metadata_type=type(metadata).__name__):
+                with self.assertRaises(recovery.RecoveryCheckError) as caught:
+                    recovery.verify_bot_secret(metadata,token)
+                self.assertNotIn(token,str(caught.exception))
+                self.assertNotIn(row["value"],str(caught.exception))
+
+    def test_invalid_inputs_do_not_make_network_requests(self):
+        for bot,management in (("copied surrounding text","test-management"),("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345","")):
+            with patch.object(recovery,"http_json") as request:
+                with self.assertRaises(recovery.RecoveryCheckError): recovery.complete_kit({},bot,management)
+            request.assert_not_called()
+
+    def test_completion_progress_is_credential_free_and_payload_is_not_mutated(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        original={"pending":["auth_configuration","telegram_bot_token"],"secrets":{}}
+        before=copy.deepcopy(original)
+        messages=[]
+        responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}}, {"smtp_host":None},
+                   [{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]]
+        with patch.object(recovery,"http_json",side_effect=responses):
+            result=recovery.complete_kit(original,token,"private-management-token",progress=messages.append)
+        self.assertEqual(original,before)
+        self.assertEqual(len(messages),4)
+        self.assertNotIn(token," ".join(messages))
+        self.assertNotIn("private-management-token",json.dumps(result))
+
+    def test_unexpected_auth_response_and_missing_smtp_password_are_explained(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        metadata=[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]
+        for auth in ({},[],{"smtp_host":"smtp.example.invalid","smtp_pass":"********"},
+                     {"smtp_host":"smtp.example.invalid","smtp_pass":None}):
+            responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}},auth,metadata]
+            with patch.object(recovery,"http_json",side_effect=responses):
+                with self.assertRaises(recovery.RecoveryCheckError) as caught:
+                    recovery.complete_kit({"pending":[],"secrets":{}},token,"private-management-token")
+            self.assertNotIn(token,str(caught.exception))
+
+    def test_network_errors_show_safe_explanations(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        url=f"https://api.telegram.org/bot{token}/getMe"
+        errors=[HTTPError(url,401,token,{},io.BytesIO(token.encode())),URLError(token),TimeoutError(token)]
+        for error in errors:
+            with patch.object(recovery,"urlopen",side_effect=error):
+                with self.assertRaises(recovery.RecoveryCheckError) as caught: recovery.http_json(url)
+            self.assertNotIn(token,str(caught.exception))
+            self.assertNotIn(url,str(caught.exception))
+
+    def test_cli_displays_only_controlled_error_details(self):
+        cases=[(recovery.RecoveryCheckError("The Telegram token format was not recognised."),"format was not recognised"),
+               (ValueError("private-credential-must-not-appear"),"ValueError"),
+               (KeyboardInterrupt(),"cancelled")]
+        for error,expected in cases:
+            output=io.StringIO()
+            with patch.object(recovery,"main",side_effect=error),redirect_stderr(output):
+                self.assertEqual(recovery.run_cli(),1)
+            self.assertIn(expected,output.getvalue())
+            self.assertNotIn("private-credential-must-not-appear",output.getvalue())
+
+    def test_complete_cli_writes_and_verifies_encrypted_kit(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        management="private-management-test-token"
+        source=b"recovery-source-test"
+        payload={"format":recovery.FORMAT,"snapshot":self.snapshot,"source_tar":base64.b64encode(source).decode(),
+                 "source_sha256":hashlib.sha256(source).hexdigest(),"pending":["telegram_bot_token"],"secrets":{}}
+        responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}},{"smtp_host":None},
+                   [{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            key=Fernet.generate_key()
+            recovery.private_write(root/"key",key)
+            recovery.private_write(root/"original.pfk",recovery.seal(payload,key))
+            argv=["recovery","complete","--key-file",str(root/"key"),"--kit",str(root/"original.pfk"),"--output",str(root/"complete.pfk")]
+            output=io.StringIO()
+            with patch.object(sys,"argv",argv),patch("getpass.getpass",side_effect=[token,management]),patch.object(recovery,"http_json",side_effect=responses),redirect_stdout(output):
+                self.assertEqual(recovery.run_cli(),0)
+            restored=recovery.open_kit(root/"complete.pfk",key)
+            self.assertEqual(restored["secrets"]["PORTFOLIO_TELEGRAM_BOT_TOKEN"],token)
+            self.assertEqual(restored["pending"],["external_account_recovery_codes"])
+            self.assertNotIn(token.encode(),(root/"complete.pfk").read_bytes())
+            self.assertNotIn(management,json.dumps(restored))
+            self.assertNotIn(token,output.getvalue())
+            self.assertNotIn(management,output.getvalue())
+            self.assertIn("saved and verified",output.getvalue())
+            self.assertEqual((root/"complete.pfk").stat().st_mode & 0o777,0o600)
+            self.assertEqual(recovery.open_kit(root/"original.pfk",key)["pending"],["telegram_bot_token"])
 
     def test_wrong_bot_token_not_accepted(self):
         with patch.object(recovery,"http_json",return_value={"ok":True,"result":{"username":"other"}}):

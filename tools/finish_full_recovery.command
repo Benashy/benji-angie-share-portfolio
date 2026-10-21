@@ -19,7 +19,14 @@ fi
 printf '\nFinish the encrypted portfolio recovery kit\n\n'
 printf 'This checks credentials and reads configuration only. It sends no messages.\n'
 printf 'Paste credentials only into this private window, never into the chat.\n\n'
-"$PYTHON" "$HERE/portfolio_full_recovery.py" complete --key-file "$1" --kit "$2" --output "$3"
-printf '\nKeep the unlock key separately in your password manager.\n'
+status=0
+"$PYTHON" "$HERE/portfolio_full_recovery.py" complete --key-file "$1" --kit "$2" --output "$3" || status=$?
+if [ "$status" -eq 0 ]; then
+  printf '\nKeep the unlock key separately in your password manager.\n'
+else
+  printf '\nRecovery setup did not complete. Your original kit and live app are unchanged.\n'
+  printf 'Copy the explanation above to Codex, never the tokens.\n'
+fi
 printf 'Press Return to close.\n'
-read -r _
+read -r _ || true
+exit "$status"
