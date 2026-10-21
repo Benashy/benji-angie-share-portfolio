@@ -31,7 +31,6 @@ from portfolio_restore import (
 )
 
 FORMAT = "portfolio-full-recovery-v1"
-BOT_NAME = "SharePortfolioReminderBot"
 EXPECTED_JOBS = {"portfolio-telegram-reports", "portfolio-drawdown-close", "portfolio-drawdown-retry"}
 FUNCTIONS = {"refresh-prices": True, "portfolio-telegram-reports": False, "portfolio-drawdown-alerts": False}
 
@@ -281,6 +280,18 @@ def verify_bot_secret(secret_metadata: list, bot_token: str) -> None:
         raise RecoveryCheckError("The copied Telegram token does not match the one deployed for this portfolio. Copy its existing token from BotFather; do not revoke or regenerate it.")
 
 
+def verify_bot_identity(response: dict) -> dict:
+    if not isinstance(response, dict) or response.get("ok") is not True:
+        raise RecoveryCheckError("Telegram did not confirm the bot identity. Stop here and report this message.")
+    bot = response.get("result")
+    if not isinstance(bot, dict) or bot.get("is_bot") is not True or type(bot.get("id")) is not int or bot["id"] <= 0:
+        raise RecoveryCheckError("Telegram did not return a valid bot identity. Stop here and report this message.")
+    username = bot.get("username")
+    if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        raise RecoveryCheckError("Telegram returned an unrecognised bot username. Stop here and report this message.")
+    return {"id": bot["id"], "username": username}
+
+
 def complete_kit(payload: dict, bot_token: str, management_token: str, *, progress=None) -> dict:
     report = progress or (lambda message: None)
     if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", bot_token):
@@ -288,16 +299,16 @@ def complete_kit(payload: dict, bot_token: str, management_token: str, *, progre
     if not management_token:
         raise RecoveryCheckError("The Supabase management token was empty. Paste it into the second hidden prompt.")
     report("Checking Telegram bot identity...")
-    bot = http_json(f"https://api.telegram.org/bot{bot_token}/getMe")
-    if not isinstance(bot, dict) or not bot.get("ok") or not isinstance(bot.get("result"), dict) or str(bot["result"].get("username", "")).lower() != BOT_NAME.lower():
-        raise RecoveryCheckError("This is not the SharePortfolioReminderBot token. Copy the existing token for that bot, without regenerating it.")
-    report("Telegram bot identity confirmed. Reading Supabase login configuration...")
+    bot = verify_bot_identity(http_json(f"https://api.telegram.org/bot{bot_token}/getMe"))
+    report(f"Telegram recognised @{bot['username']}. Reading Supabase login configuration...")
     base = f"https://api.supabase.com/v1/projects/{PRODUCTION_PROJECT_REF}"
     auth = http_json(base + "/config/auth", token=management_token)
     if not isinstance(auth, dict) or not auth:
         raise RecoveryCheckError("Supabase returned an unexpected login-configuration format. Stop here and report this message.")
     report("Login configuration received. Checking the deployed Telegram token fingerprint...")
     secret_metadata = http_json(base + "/secrets", token=management_token)
+    # A remembered bot name is not authoritative. Exact agreement with the
+    # project's deployed secret is required before saving any credentials.
     verify_bot_secret(secret_metadata, bot_token)
     smtp_pass = auth.get("smtp_pass")
     if auth.get("smtp_host") and (not isinstance(smtp_pass, str) or not smtp_pass or "***" in smtp_pass):
@@ -305,6 +316,7 @@ def complete_kit(payload: dict, bot_token: str, management_token: str, *, progre
     report("Deployed token confirmed. Preparing the encrypted recovery kit...")
     result = json.loads(json.dumps(payload))
     result["secrets"]["PORTFOLIO_TELEGRAM_BOT_TOKEN"] = bot_token
+    result["telegram_bot_identity"] = bot
     result["auth_config"] = auth
     result["pending"] = ["external_account_recovery_codes"]
     result["credentials_verified_at"] = datetime.now(timezone.utc).isoformat()

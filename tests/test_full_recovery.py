@@ -34,6 +34,7 @@ class FullRecoveryTests(unittest.TestCase):
             "jobs":[{"name":name,"schedule":"0 12 * * *","command":f"select net.http_post(url := 'https://{recovery.PRODUCTION_PROJECT_REF}.supabase.co/functions/v1/test');","active":True} for name in recovery.EXPECTED_JOBS],
         }
         self.snapshot["portfolio"]["app_members"]=[{"user_id":"one"},{"user_id":"two"}]
+        self.bot={"ok":True,"result":{"id":123456789,"is_bot":True,"username":"PortfolioFixtureBot"}}
 
     def test_valid_snapshot(self):
         recovery.validate_snapshot(self.snapshot)
@@ -106,7 +107,7 @@ class FullRecoveryTests(unittest.TestCase):
 
     def test_no_telegram_send_in_completion(self):
         token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
-        responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}},{"smtp_host":None},[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]]
+        responses=[self.bot,{"smtp_host":None},[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]]
         with patch.object(recovery,"http_json",side_effect=responses) as request:
             result=recovery.complete_kit({"pending":[],"secrets":{}},token,"temporary-management-token")
         self.assertTrue(all("sendMessage" not in call.args[0] for call in request.call_args_list))
@@ -144,7 +145,7 @@ class FullRecoveryTests(unittest.TestCase):
         original={"pending":["auth_configuration","telegram_bot_token"],"secrets":{}}
         before=copy.deepcopy(original)
         messages=[]
-        responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}}, {"smtp_host":None},
+        responses=[self.bot, {"smtp_host":None},
                    [{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]]
         with patch.object(recovery,"http_json",side_effect=responses):
             result=recovery.complete_kit(original,token,"private-management-token",progress=messages.append)
@@ -158,7 +159,7 @@ class FullRecoveryTests(unittest.TestCase):
         metadata=[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]
         for auth in ({},[],{"smtp_host":"smtp.example.invalid","smtp_pass":"********"},
                      {"smtp_host":"smtp.example.invalid","smtp_pass":None}):
-            responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}},auth,metadata]
+            responses=[self.bot,auth,metadata]
             with patch.object(recovery,"http_json",side_effect=responses):
                 with self.assertRaises(recovery.RecoveryCheckError) as caught:
                     recovery.complete_kit({"pending":[],"secrets":{}},token,"private-management-token")
@@ -191,7 +192,7 @@ class FullRecoveryTests(unittest.TestCase):
         source=b"recovery-source-test"
         payload={"format":recovery.FORMAT,"snapshot":self.snapshot,"source_tar":base64.b64encode(source).decode(),
                  "source_sha256":hashlib.sha256(source).hexdigest(),"pending":["telegram_bot_token"],"secrets":{}}
-        responses=[{"ok":True,"result":{"username":recovery.BOT_NAME}},{"smtp_host":None},
+        responses=[self.bot,{"smtp_host":None},
                    [{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":hashlib.sha256(token.encode()).hexdigest()}]]
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
@@ -204,6 +205,7 @@ class FullRecoveryTests(unittest.TestCase):
                 self.assertEqual(recovery.run_cli(),0)
             restored=recovery.open_kit(root/"complete.pfk",key)
             self.assertEqual(restored["secrets"]["PORTFOLIO_TELEGRAM_BOT_TOKEN"],token)
+            self.assertEqual(restored["telegram_bot_identity"],{"id":123456789,"username":"PortfolioFixtureBot"})
             self.assertEqual(restored["pending"],["external_account_recovery_codes"])
             self.assertNotIn(token.encode(),(root/"complete.pfk").read_bytes())
             self.assertNotIn(management,json.dumps(restored))
@@ -213,9 +215,46 @@ class FullRecoveryTests(unittest.TestCase):
             self.assertEqual((root/"complete.pfk").stat().st_mode & 0o777,0o600)
             self.assertEqual(recovery.open_kit(root/"original.pfk",key)["pending"],["telegram_bot_token"])
 
-    def test_wrong_bot_token_not_accepted(self):
-        with patch.object(recovery,"http_json",return_value={"ok":True,"result":{"username":"other"}}):
-            with self.assertRaises(ValueError): recovery.complete_kit({},"123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ","token")
+    def test_bot_name_does_not_override_deployed_token_verification(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        fingerprint=hashlib.sha256(token.encode()).hexdigest()
+        for name in ("PortfolioFixtureBot","RenamedPortfolioBot","SharePortfolioReminderBot"):
+            with self.subTest(name=name):
+                bot=copy.deepcopy(self.bot)
+                bot["result"]["username"]=name
+                responses=[bot,{"smtp_host":None},[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":fingerprint}]]
+                messages=[]
+                with patch.object(recovery,"http_json",side_effect=responses):
+                    result=recovery.complete_kit({"pending":[],"secrets":{}},token,"test-management",progress=messages.append)
+                self.assertEqual(result["telegram_bot_identity"]["username"],name)
+                self.assertIn(f"@{name}"," ".join(messages))
+
+    def test_familiar_bot_name_cannot_bypass_a_wrong_deployed_token(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        bot=copy.deepcopy(self.bot)
+        bot["result"]["username"]="SharePortfolioReminderBot"
+        original={"pending":["telegram_bot_token"],"secrets":{}}
+        responses=[bot,{"smtp_host":None},[{"name":"PORTFOLIO_TELEGRAM_BOT_TOKEN","value":"0"*64}]]
+        with patch.object(recovery,"http_json",side_effect=responses):
+            with self.assertRaisesRegex(recovery.RecoveryCheckError,"does not match the one deployed"):
+                recovery.complete_kit(original,token,"test-management")
+        self.assertEqual(original,{"pending":["telegram_bot_token"],"secrets":{}})
+
+    def test_invalid_bot_identity_is_not_used_or_printed(self):
+        token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_12345"
+        examples=[None,[],{"ok":False},{"ok":True,"result":None},
+                  {"ok":True,"result":{"id":1,"is_bot":False,"username":"HumanUser"}},
+                  {"ok":True,"result":{"id":True,"is_bot":True,"username":"ValidName"}},
+                  {"ok":True,"result":{"id":-1,"is_bot":True,"username":"ValidName"}},
+                  {"ok":True,"result":{"id":1,"is_bot":True,"username":token}},
+                  {"ok":True,"result":{"id":1,"is_bot":True,"username":"name\nprivate-data"}}]
+        for bot in examples:
+            messages=[]
+            with patch.object(recovery,"http_json",return_value=bot) as request:
+                with self.assertRaises(recovery.RecoveryCheckError) as caught:
+                    recovery.complete_kit({},token,"test-management",progress=messages.append)
+            self.assertEqual(request.call_count,1)
+            self.assertNotIn(token," ".join(messages)+str(caught.exception))
 
     def test_test_function_blocks_telegram_and_production(self):
         files=recovery.recovery_test_function([{"name":"index.ts","content":"Deno.serve(async()=>Response.json({}));"}],self.project,"X"*32,[])
