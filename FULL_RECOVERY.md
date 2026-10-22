@@ -21,6 +21,13 @@ then authenticated and encrypted with Fernet. The independent random unlock key
 must be stored in a password manager, never in GitHub or beside the Dropbox kit.
 Loss of both the Mac and this independent key makes the kit unrecoverable.
 
+After saving the key in a password manager, run `tools/test_recovery_key.command`
+with the completed kit and a new non-secret report path. Copy the saved Password
+field into its hidden prompt. This check never reads the original key file,
+stores the supplied key, calls a service or executes restore SQL. It verifies the
+archive and prepares disabled schedules in memory only. Preserve the original
+key until this independently supplied copy has passed the check.
+
 `tools/recovery-requirements.txt` pins the recovery reader dependencies. Install
 them into a private virtual environment on a replacement machine. The normal
 website and existing daily backup do not depend on these packages.
@@ -33,7 +40,13 @@ deployed token digest and reads the Auth configuration. It sends no Telegram
 messages, changes no settings and does not retain the management token. It creates
 a new encrypted kit rather than overwriting the original. Check the two underlying
 users are the only intended accounts and separately preserve platform recovery
-codes for GitHub, Supabase, Dropbox and the Telegram bot owner's account.
+access for GitHub, Supabase, Dropbox and the Telegram bot owner's account. Record
+the actual sign-in method: Supabase may depend on GitHub rather than having a
+separate password. Keep applicable two-factor recovery codes, or the service's
+recovery method where codes are not provided. Telegram recovery depends on access
+to the registered number and, if enabled, its two-step password/recovery email.
+Keep the 1Password Emergency Kit and required account-recovery information outside
+the 1Password vault too, so losing a device does not create a circular dependency.
 
 Use a Supabase project-scoped management token with read access to the Auth
 configuration and secret metadata only. This is not the frontend publishable key
