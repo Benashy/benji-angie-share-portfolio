@@ -9,12 +9,14 @@ Do not commit that env file to GitHub.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import csv
 import hashlib
 import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -156,9 +158,31 @@ def fetch_all_tables(supabase_url: str, service_key: str) -> dict[str, list[dict
     raise last_error or RuntimeError("Supabase request failed.")
 
 
+@contextmanager
+def atomic_text_writer(path: Path, *, newline=None):
+    # Replacing a completed sibling avoids truncating Dropbox online-only files.
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", newline=newline, encoding="utf-8") as file:
+            yield file
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def atomic_write_text(path: Path, text: str, *, newline=None) -> None:
+    with atomic_text_writer(path, newline=newline) as file:
+        file.write(text)
+
+
 def write_csv(path: Path, rows: list[dict]) -> None:
     fields = sorted({key for row in rows for key in row.keys()})
-    with path.open("w", newline="", encoding="utf-8") as file:
+    with atomic_text_writer(path, newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
         for row in rows:
@@ -177,8 +201,8 @@ def write_backup_files(directory: Path, data: dict[str, list[dict]], created_at:
     directory.mkdir(parents=True, exist_ok=True)
     json_path = directory / "portfolio-backup.json"
     summary_path = directory / "portfolio-summary.txt"
-    json_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    summary_path.write_text(build_summary(data, created_at), encoding="utf-8")
+    atomic_write_text(json_path, json.dumps(data, indent=2, sort_keys=True))
+    atomic_write_text(summary_path, build_summary(data, created_at))
     for table, rows in data.items():
         write_csv(directory / f"{table}.csv", rows)
     files = [json_path, summary_path, *[directory / f"{table}.csv" for table in data]]
@@ -188,7 +212,7 @@ def write_backup_files(directory: Path, data: dict[str, list[dict]], created_at:
         "tables": {table: len(rows) for table, rows in data.items()},
         "files": {path.name: file_sha256(path) for path in files},
     }
-    (directory / "backup-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_text(directory / "backup-manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
     return manifest
 
 
@@ -217,6 +241,22 @@ def verify_backup_directory(directory: Path, required_tables: list[str] | None =
         if not path.exists() or file_sha256(path) != expected_hash:
             raise RuntimeError(f"Backup verification failed: checksum mismatch for {name}")
     return manifest
+
+
+def refresh_latest_copy(source: Path, target: Path) -> dict:
+    source_path, target_path = source.resolve(), target.resolve()
+    if source_path == target_path or source_path in target_path.parents or target_path in source_path.parents:
+        raise ValueError("Latest backup copy must be separate from its dated source")
+    manifest = verify_backup_directory(source, required_tables=TABLES)
+    target.mkdir(parents=True, exist_ok=True)
+    # Copy verified bytes, preserving embedded JSON and CSV newline formatting.
+    for name in [*manifest["files"], "backup-manifest.json"]:
+        atomic_write_text(target / name, (source / name).read_bytes().decode("utf-8"), newline="")
+    verified = verify_backup_directory(target, required_tables=TABLES)
+    marker = source / "last-successful-backup.json"
+    if marker.exists():
+        atomic_write_text(target / marker.name, marker.read_bytes().decode("utf-8"), newline="")
+    return verified
 
 
 def money(value: float | int | None) -> str:
@@ -343,7 +383,7 @@ def write_success_marker(latest_dir: Path, now: datetime, daily_dir: Path) -> No
         "timestamp": now.isoformat(),
         "daily_backup": str(daily_dir),
     }
-    (latest_dir / "last-successful-backup.json").write_text(json.dumps(marker, indent=2), encoding="utf-8")
+    atomic_write_text(latest_dir / "last-successful-backup.json", json.dumps(marker, indent=2))
 
 
 def main() -> int:
@@ -394,9 +434,7 @@ def main() -> int:
 
     latest_refreshed = True
     try:
-        latest_dir.mkdir(parents=True, exist_ok=True)
-        write_backup_files(latest_dir, data, created_at)
-        verify_backup_directory(latest_dir)
+        refresh_latest_copy(daily_dir, latest_dir)
         write_success_marker(latest_dir, now, daily_dir)
     except OSError as error:
         latest_refreshed = False
