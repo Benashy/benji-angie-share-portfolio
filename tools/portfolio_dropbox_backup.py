@@ -243,11 +243,7 @@ def verify_backup_directory(directory: Path, required_tables: list[str] | None =
     return manifest
 
 
-def refresh_latest_copy(source: Path, target: Path) -> dict:
-    source_path, target_path = source.resolve(), target.resolve()
-    if source_path == target_path or source_path in target_path.parents or target_path in source_path.parents:
-        raise ValueError("Latest backup copy must be separate from its dated source")
-    manifest = verify_backup_directory(source, required_tables=TABLES)
+def populate_latest_copy(source: Path, target: Path, manifest: dict) -> dict:
     target.mkdir(parents=True, exist_ok=True)
     # Copy verified bytes, preserving embedded JSON and CSV newline formatting.
     for name in [*manifest["files"], "backup-manifest.json"]:
@@ -257,6 +253,97 @@ def refresh_latest_copy(source: Path, target: Path) -> dict:
     if marker.exists():
         atomic_write_text(target / marker.name, marker.read_bytes().decode("utf-8"), newline="")
     return verified
+
+
+def refresh_latest_copy(source: Path, target: Path) -> dict:
+    source_path, target_path = source.resolve(), target.resolve()
+    if source_path == target_path or source_path in target_path.parents or target_path in source_path.parents:
+        raise ValueError("Latest backup copy must be separate from its dated source")
+    if target.is_symlink():
+        raise ValueError("Latest backup copy must be a real folder, not a symbolic link")
+    manifest = verify_backup_directory(source, required_tables=TABLES)
+    try:
+        return populate_latest_copy(source, target, manifest)
+    except PermissionError:
+        # File Provider can refuse background replacement of existing items.
+        # Publish a fully verified new folder instead, preserving the old copy.
+        stage = Path(tempfile.mkdtemp(prefix=f".{target.name}-incoming-", dir=target.parent))
+        previous = None
+        try:
+            populate_latest_copy(source, stage, manifest)
+            history = target.parent / "latest-copy-repair-history"
+            history.mkdir(mode=0o700, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+            previous = history / stamp
+            os.rename(target, previous)
+            try:
+                os.rename(stage, target)
+            except OSError:
+                os.rename(previous, target)
+                raise
+            verified = verify_backup_directory(target, required_tables=TABLES)
+            print(f"Latest copy republished as a verified folder. Previous copy preserved at {previous}")
+            return verified
+        finally:
+            if stage.exists():
+                try:
+                    shutil.rmtree(stage)
+                except OSError:
+                    print(f"Temporary latest-copy staging retained at {stage}")
+
+
+def latest_copy_matches(source: Path, target: Path) -> bool:
+    try:
+        original = verify_backup_directory(source, required_tables=TABLES)
+        latest = verify_backup_directory(target, required_tables=TABLES)
+        if original != latest:
+            return False
+        source_marker = (source / "last-successful-backup.json").read_bytes()
+        return source_marker == (target / "last-successful-backup.json").read_bytes()
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return False
+
+
+def newest_complete_daily_backup(root: Path, day: str | None = None) -> Path | None:
+    pattern = f"{day}-*" if day else "????-??-??-????"
+    for candidate in sorted((root / "daily").glob(pattern), reverse=True):
+        try:
+            verify_backup_directory(candidate, required_tables=TABLES)
+            return candidate
+        except PermissionError:
+            # An inaccessible saved backup must not trigger a live download.
+            raise
+        except (OSError, RuntimeError, ValueError, TypeError):
+            continue
+    return None
+
+
+def verified_daily_from_marker(marker: Path, root: Path, day: str) -> Path | None:
+    try:
+        saved = json.loads(marker.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(saved, dict) or saved.get("date") != day:
+        return None
+    source = Path(saved.get("daily_backup") or "")
+    if source.parent.resolve() != (root / "daily").resolve() or not source.name.startswith(f"{day}-"):
+        return None
+    verify_backup_directory(source, required_tables=TABLES)
+    return source
+
+
+def repair_latest_from_saved_backup(source: Path, target: Path) -> int:
+    try:
+        refresh_latest_copy(source, target)
+        if not latest_copy_matches(source, target):
+            raise RuntimeError("Latest-copy verification did not match the dated source")
+    except (OSError, RuntimeError, ValueError, TypeError) as error:
+        print(f"Latest-copy repair failed: {error}. The verified dated backup is unchanged; the next scheduled attempt will retry.", file=sys.stderr)
+        return 1
+    print(f"Latest scheduled copy repaired and verified from {source.name}. No download or live status update was needed.")
+    return 0
 
 
 def money(value: float | int | None) -> str:
@@ -391,14 +478,12 @@ def main() -> int:
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE), help="Path to the private env file.")
     parser.add_argument("--backup-dir", default=str(DEFAULT_BACKUP_DIR), help="Dropbox backup folder.")
     parser.add_argument("--skip-if-today", action="store_true", help="Exit successfully if a scheduled backup already succeeded today.")
+    parser.add_argument("--repair-latest", action="store_true", help="Repair the latest copy from the newest verified dated backup, offline and without reading credentials.")
     args = parser.parse_args()
 
     env_file = Path(args.env_file).expanduser()
-    load_env(env_file)
-    supabase_url = os.environ.get("SUPABASE_URL", "").strip()
-    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-    if not supabase_url or not service_key:
-        raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.")
+    if not args.repair_latest:
+        load_env(env_file)
 
     now = datetime.now(timezone.utc).astimezone()
     stamp = now.strftime("%Y-%m-%d-%H%M")
@@ -410,13 +495,37 @@ def main() -> int:
     local_marker = env_file.with_name("last-successful-backup.json")
     today_key = now.strftime("%Y-%m-%d")
 
-    if args.skip_if_today and (
-        local_successful_backup_today(local_marker, today_key)
-        or successful_backup_today(latest_dir, today_key)
-        or complete_daily_backup_today(root, today_key)
-    ):
-        print(f"Portfolio backup skipped: successful backup already exists for {today_key}.")
-        return 0
+    if args.repair_latest:
+        try:
+            source = newest_complete_daily_backup(root)
+        except PermissionError as error:
+            print(f"Saved backup access denied: {error}. No download or live status update was attempted.", file=sys.stderr)
+            return 1
+        if source is None:
+            print("No complete dated backup is available for the offline repair.", file=sys.stderr)
+            return 1
+        return repair_latest_from_saved_backup(source, latest_dir)
+
+    if args.skip_if_today:
+        try:
+            # The private local marker avoids File Provider directory-listing restrictions.
+            source = verified_daily_from_marker(local_marker, root, today_key)
+            if source is None:
+                source = newest_complete_daily_backup(root, today_key)
+        except PermissionError as error:
+            print(f"Saved backup access denied: {error}. No download or live status update was attempted.", file=sys.stderr)
+            return 1
+        if source is not None:
+            if latest_copy_matches(source, latest_dir):
+                print(f"Portfolio backup skipped: today's dated backup and latest scheduled copy are both verified for {today_key}.")
+                return 0
+            print("Today's dated backup is verified, but the latest scheduled copy needs repair.")
+            return repair_latest_from_saved_backup(source, latest_dir)
+
+    supabase_url = os.environ.get("SUPABASE_URL", "").strip()
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not supabase_url or not service_key:
+        raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.")
 
     try:
         data = fetch_all_tables(supabase_url, service_key)
@@ -435,7 +544,6 @@ def main() -> int:
     latest_refreshed = True
     try:
         refresh_latest_copy(daily_dir, latest_dir)
-        write_success_marker(latest_dir, now, daily_dir)
     except OSError as error:
         latest_refreshed = False
         print(f"Latest scheduled backup refresh skipped: {error}")
@@ -464,7 +572,7 @@ def main() -> int:
         print(f"Latest scheduled backup refreshed at {latest_dir}")
     else:
         print(f"Latest scheduled backup was not refreshed; dated backup is complete at {daily_dir}")
-    return 0
+    return 0 if latest_refreshed else 1
 
 
 if __name__ == "__main__":
