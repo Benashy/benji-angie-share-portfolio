@@ -4,12 +4,12 @@ import {
   orderedTransactions,
   quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-10-20-recovery-1";
+} from "./portfolio-core.js?v=2026-11-16-retire-revolut-1";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-10-20-recovery-1";
+const APP_VERSION = "2026-11-16-retire-revolut-1";
 
 const state = {
   session: null,
@@ -82,9 +82,18 @@ const sectorMap = {
   HWM: "Industrials",
   VUAA: "Broad Market ETF",
   SGLN: "Commodities / Gold",
-  WXBT: "Crypto",
-  Crypto: "Crypto"
+  WXBT: "Crypto"
 };
+
+function isRetiredHoldingTicker(ticker) {
+  return /^(?:CRYPTO|CRYPT0)$/i.test(String(ticker || "").trim());
+}
+
+const retiredHoldingMessage = "This holding has been retired and cannot be used for equity transactions.";
+
+function isLedgerEntryLocked(row) {
+  return row.is_locked || isRetiredHoldingTicker(row.ticker);
+}
 
 const marketDefinitions = [
   {
@@ -495,7 +504,6 @@ function appConfirm({ title = "Please confirm", message, confirmLabel = "Confirm
 }
 
 function displayHoldingName(ticker, holding) {
-  if (ticker === "Crypto") return "Crypto (Revolut)";
   const override = holdingNameOverrideFor(ticker);
   if (override?.display_name) return override.display_name;
   return baseHoldingName(ticker, holding);
@@ -560,18 +568,8 @@ function latestByKey(rows, keyFn) {
   return [...grouped.values()];
 }
 
-function latestManualValue(ticker, owner, account) {
-  const matches = activeRows(state.ledger.manual_values).filter((row) => row.ticker === ticker && row.owner === owner && row.account === account);
-  return latestByKey(matches, () => `${ticker}|${owner}|${account}`)[0] || null;
-}
-
 function latestPensions() {
   return latestByKey(state.ledger.pensions, (row) => row.name);
-}
-
-function latestManualValueForAccount(account) {
-  const matches = activeRows(state.ledger.manual_values).filter((row) => row.account === account);
-  return latestByKey(matches, () => account)[0] || null;
 }
 
 function marketPriceMap() {
@@ -587,7 +585,7 @@ function requiredMarketTickers() {
   const tickers = new Set(["GBPUSD=X"]);
   for (const row of activeRows(state.ledger.transactions || [])) {
     const ticker = String(row.ticker || "").trim();
-    if (ticker && ticker !== "CASH" && ticker !== "Crypto") tickers.add(ticker);
+    if (ticker && ticker !== "CASH" && !isRetiredHoldingTicker(ticker)) tickers.add(ticker);
   }
   return [...tickers];
 }
@@ -800,6 +798,10 @@ function clearTransactionDraft(key) {
 function restoreTransactionDraft(form, key) {
   const values = readTransactionDrafts()[key];
   if (!values) return false;
+  if ((key === "equity" && isRetiredHoldingTicker(values.ticker)) || (key === "manual" && values.kind === "crypto")) {
+    clearTransactionDraft(key);
+    return false;
+  }
   Object.entries(values).forEach(([name, value]) => {
     const field = form.elements[name];
     if (field) field.value = value;
@@ -1970,7 +1972,7 @@ function renderTransaction(portfolio) {
       <div class="transaction-tabs" role="tablist" aria-label="Transaction type">
         <button id="equityTab" type="button" role="tab" data-transaction-tab="equity" aria-controls="equityPanel" aria-selected="${activePanel === "equity"}" tabindex="${activePanel === "equity" ? 0 : -1}"><i data-lucide="line-chart"></i><span>Equity</span></button>
         <button id="cashTab" type="button" role="tab" data-transaction-tab="cash" aria-controls="cashPanel" aria-selected="${activePanel === "cash"}" tabindex="${activePanel === "cash" ? 0 : -1}"><i data-lucide="credit-card"></i><span>Cash</span></button>
-        <button id="manualTab" type="button" role="tab" data-transaction-tab="manual" aria-controls="manualPanel" aria-selected="${activePanel === "manual"}" tabindex="${activePanel === "manual" ? 0 : -1}"><i data-lucide="edit-3"></i><span>Manual value</span></button>
+        <button id="manualTab" type="button" role="tab" data-transaction-tab="manual" aria-controls="manualPanel" aria-selected="${activePanel === "manual"}" tabindex="${activePanel === "manual" ? 0 : -1}"><i data-lucide="edit-3"></i><span>Pension valuation</span></button>
       </div>
       <div id="equityPanel" class="card transaction-panel ${activePanel === "equity" ? "active" : ""}" data-transaction-panel="equity" role="tabpanel" aria-labelledby="equityTab">
         <h2>Buy / Sell Equity</h2>
@@ -2008,17 +2010,16 @@ function renderTransaction(portfolio) {
         </form>
       </div>
       <div id="manualPanel" class="card transaction-panel ${activePanel === "manual" ? "active" : ""}" data-transaction-panel="manual" role="tabpanel" aria-labelledby="manualTab">
-        <h2>Manual Updates</h2>
+        <h2>Pension Valuation</h2>
         ${saveBanner("manual")}
         <form id="manualForm">
           <input name="client_request_id" type="hidden" value="${uid()}">
           <label for="manualDate">Date</label><input id="manualDate" name="date" type="date" value="${todayIso()}" required ${disabled}>
-          <label for="manualKind">Type</label><select id="manualKind" name="kind" ${disabled}><option value="crypto">Revolut crypto</option><option value="pension">British Airways pension</option></select>
-          <label for="manualAccount">Account / pension name</label><select id="manualAccount" name="account" ${disabled}></select>
+          <label for="manualAccount">Pension</label><select id="manualAccount" name="account" required ${disabled}></select>
           <div class="transaction-total">Current value: <strong id="manualCurrent">-</strong> | Difference: <strong id="manualDifference" class="neutral-text">-</strong></div>
           <label for="manualCurrency">Currency</label><select id="manualCurrency" name="currency" ${disabled}><option>GBP</option><option>USD</option></select>
           <label for="manualValue">New value</label><input id="manualValue" name="value" type="number" min="0.01" step="any" inputmode="decimal" required ${disabled}>
-          <button ${disabled}>Save manual value</button>
+          <button ${disabled}>Save pension value</button>
         </form>
       </div>
     </section>
@@ -2119,6 +2120,12 @@ function wireTickerLookup(form, portfolio) {
     const ticker = input.value.trim().toUpperCase();
     if (!ticker || pendingTicker === ticker) return;
     const currentRequest = ++request;
+    if (isRetiredHoldingTicker(ticker)) {
+      pendingTicker = "";
+      status.textContent = retiredHoldingMessage;
+      status.className = "lookup-status warn";
+      return;
+    }
     pendingTicker = ticker;
     let quote = marketPriceMap().get(ticker);
     if ((!priceIsFresh(quote) || !quote?.metrics?.instrument) && supabaseClient && state.session) {
@@ -2170,23 +2177,11 @@ function wireTransactionPreview(form, portfolio) {
 }
 
 function setupManualForm(form, portfolio) {
+  form.elements.account.innerHTML = latestPensions().map((row) => `<option>${escapeHtml(row.name)}</option>`).join("");
   const update = () => {
-    const previousAccount = form.elements.account.value;
-    let currentGbp = 0;
-    if (form.elements.kind.value === "crypto") {
-      form.elements.account.innerHTML = '<option>Benji - Revolut - Crypto</option>';
-      const current = latestManualValue("Crypto", "Benji", "Benji - Revolut - Crypto");
-      currentGbp = Number(current?.value_gbp || 0);
-      el("manualCurrent").textContent = `${money(currentGbp)} / ${usd(currentGbp * portfolio.fx)}`;
-    } else {
-      form.elements.account.innerHTML = latestPensions().map((row) => `<option>${escapeHtml(row.name)}</option>`).join("");
-      if ([...form.elements.account.options].some((option) => option.value === previousAccount)) {
-        form.elements.account.value = previousAccount;
-      }
-      const row = latestPensions().find((p) => p.name === form.elements.account.value);
-      currentGbp = Number(row?.value_gbp || 0);
-      el("manualCurrent").textContent = money(row?.value_gbp || 0);
-    }
+    const row = latestPensions().find((p) => p.name === form.elements.account.value);
+    const currentGbp = Number(row?.value_gbp || 0);
+    el("manualCurrent").textContent = money(currentGbp);
     const entered = Number(form.elements.value.value || 0);
     const newValueGbp = form.elements.currency.value === "USD" ? entered / portfolio.fx : entered;
     const difference = entered ? newValueGbp - currentGbp : 0;
@@ -2194,7 +2189,6 @@ function setupManualForm(form, portfolio) {
     differenceTarget.textContent = entered ? moneySigned(difference) : "-";
     differenceTarget.className = difference > 0 ? "gain-text" : difference < 0 ? "loss-text" : "neutral-text";
   };
-  form.elements.kind.addEventListener("change", update);
   form.elements.account.addEventListener("change", update);
   form.elements.currency.addEventListener("change", update);
   form.elements.value.addEventListener("input", update);
@@ -2222,6 +2216,10 @@ async function submitEquity(event, portfolio) {
     clearSaveMessage("equity");
     clearFormError(form);
     const data = Object.fromEntries(new FormData(form).entries());
+    if (isRetiredHoldingTicker(data.ticker)) {
+      showFormError(form, retiredHoldingMessage, ["ticker"]);
+      return;
+    }
     if (!(await confirmBackdatedUsdFx(data, portfolio.fx))) return;
     const local = Number(data.quantity) * Number(data.price);
     const amountGbp = data.currency === "USD" ? local / portfolio.fx : local;
@@ -2421,9 +2419,12 @@ async function submitManual(event, portfolio) {
       return;
     }
     const valueGbp = data.currency === "USD" ? entered / portfolio.fx : entered;
-    const currentGbp = data.kind === "crypto"
-      ? Number(latestManualValueForAccount(data.account)?.value_gbp || 0)
-      : Number(latestPensions().find((row) => row.name === data.account)?.value_gbp || 0);
+    const pension = latestPensions().find((row) => row.name === data.account);
+    if (!pension) {
+      showFormError(form, "Choose a pension.", ["account"]);
+      return;
+    }
+    const currentGbp = Number(pension.value_gbp || 0);
     const differenceGbp = valueGbp - currentGbp;
     if (currentGbp && Math.abs(valueGbp - currentGbp) / currentGbp > 0.10) {
       const ok = await appConfirm({
@@ -2433,39 +2434,22 @@ async function submitManual(event, portfolio) {
       });
       if (!ok) return;
     }
-    if (data.kind === "crypto") {
-      await insertRow("manual_values", {
-        date: data.date,
-        ticker: "Crypto",
-        holding: "Crypto (Revolut)",
-        owner: "Benji",
-        account: "Benji - Revolut - Crypto",
-        value_gbp: valueGbp,
-        currency_entered: data.currency,
-        value_entered: entered,
-        notes: "Manual value entered in web app",
-        client_request_id: data.client_request_id,
-        created_by: state.session.user.id,
-        updated_by: state.session.user.id
-      }, "manual_update");
-    } else {
-      await insertRow("pension_values", {
-        date: data.date,
-        name: data.account,
-        value_gbp: valueGbp,
-        cost_gbp: latestPensions().find((row) => row.name === data.account)?.cost_gbp || null,
-        client_request_id: data.client_request_id,
-        created_by: state.session.user.id,
-        updated_by: state.session.user.id
-      }, "manual_update");
-    }
-    setSaveMessage("manual", `Manual value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()} UK | Change ${moneySigned(differenceGbp)}.`);
+    await insertRow("pension_values", {
+      date: data.date,
+      name: data.account,
+      value_gbp: valueGbp,
+      cost_gbp: pension.cost_gbp || null,
+      client_request_id: data.client_request_id,
+      created_by: state.session.user.id,
+      updated_by: state.session.user.id
+    }, "manual_update");
+    setSaveMessage("manual", `Pension value saved: ${money(valueGbp)} for ${data.account} at ${shortUkTime()} UK | Change ${moneySigned(differenceGbp)}.`);
     form.reset();
     clearTransactionDraft("manual");
     await loadCloudLedger();
     renderAll();
   } catch (error) {
-    setSaveMessage("manual", `Manual value save failed: ${error.message}`, "error");
+    setSaveMessage("manual", `Pension value save failed: ${error.message}`, "error");
     renderTransaction(portfolio);
   } finally {
     state.busyForms.manual = false;
@@ -2514,7 +2498,7 @@ async function softDeleteRow(tableName, row, action) {
 
 async function softDeleteTransaction(id, trigger) {
   const row = state.ledger.transactions.find((item) => item.id === id);
-  if (!row || row.is_locked) return;
+  if (!row || isLedgerEntryLocked(row)) return;
   const confirmed = await appConfirm({
     title: "Delete ledger entry?",
     message: `${row.type} ${row.ticker} for ${money(row.amount_gbp)} will be removed from the active portfolio.`,
@@ -2541,7 +2525,7 @@ async function softDeleteTransaction(id, trigger) {
 }
 
 async function undoLatestTransaction() {
-  const row = [...activeRows(state.ledger.transactions)].reverse().find((item) => !item.is_locked);
+  const row = [...activeRows(state.ledger.transactions)].reverse().find((item) => !isLedgerEntryLocked(item));
   if (!row) return;
   state.lastUndoneTransaction = row;
   await softDeleteTransaction(row.id);
@@ -2621,7 +2605,7 @@ function renderLedger() {
   const backupText = backupStatusText();
   const renderTransactionRow = (tx) => {
     const isCash = tx.type === "deposit" || tx.type === "withdrawal";
-    const actionButtons = tx.is_locked || !isConfigured
+    const actionButtons = isLedgerEntryLocked(tx) || !isConfigured
       ? '<span class="subtle">Locked</span>'
       : `<div class="inline-row"><button class="secondary small" data-edit="${tx.id}"><i data-lucide="pencil"></i><span>Edit</span></button><button class="danger small" data-delete="${tx.id}"><i data-lucide="trash-2"></i><span>Delete</span></button></div>`;
     const noteDetail = tx.notes ? `<details class="ledger-note-detail"><summary>Notes</summary><p>${escapeHtml(tx.notes)}</p></details>` : "";
@@ -2729,7 +2713,13 @@ async function submitTransactionEdit(event) {
   clearFormError(form);
   const data = Object.fromEntries(new FormData(form).entries());
   const row = state.ledger.transactions.find((item) => item.id === data.id);
-  if (!row) {
+  if (!row || isLedgerEntryLocked(row)) {
+    state.busyForms.ledgerEdit = false;
+    setFormWorking(form, false);
+    return;
+  }
+  if (isRetiredHoldingTicker(data.ticker)) {
+    showFormError(form, retiredHoldingMessage, ["ticker"]);
     state.busyForms.ledgerEdit = false;
     setFormWorking(form, false);
     return;
