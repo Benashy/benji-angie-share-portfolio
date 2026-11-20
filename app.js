@@ -4,12 +4,12 @@ import {
   orderedTransactions,
   quoteValidationError,
   validateTransactionInput,
-} from "./portfolio-core.js?v=2026-11-16-retire-revolut-1";
+} from "./portfolio-core.js?v=2026-11-20-transaction-focus-1";
 
 const config = window.PORTFOLIO_CONFIG || {};
 const isConfigured = Boolean(config.supabaseUrl && config.supabaseAnonKey && !config.demoMode);
 const supabaseClient = await createSupabaseClient();
-const APP_VERSION = "2026-11-16-retire-revolut-1";
+const APP_VERSION = "2026-11-20-transaction-focus-1";
 
 const state = {
   session: null,
@@ -28,6 +28,7 @@ const state = {
   saveMessages: {},
   saveTimers: {},
   busyForms: {},
+  transactionFocus: null,
   marketRefreshMessage: "",
   marketRefreshTone: "",
   marketMessageTimer: null,
@@ -825,6 +826,55 @@ function wireTransactionDraft(form, key) {
   });
 }
 
+function rememberTransactionFocus() {
+  const field = document.activeElement;
+  if (state.activeView !== "transaction" || !field?.id
+    || !field.matches("input:not([type='hidden']), select, textarea")
+    || !el("transactionView")?.contains(field)) return;
+  state.transactionFocus = {
+    id: field.id,
+    start: field.selectionStart,
+    end: field.selectionEnd,
+    direction: field.selectionDirection,
+  };
+}
+
+function restoreTransactionFocus() {
+  const saved = state.transactionFocus;
+  if (!saved || !state.session || state.activeView !== "transaction"
+    || document.visibilityState !== "visible" || !document.hasFocus()) return;
+  const field = el(saved.id);
+  if (!field?.isConnected || field.disabled || !field.getClientRects().length) return;
+  const active = document.activeElement;
+  // Returning to the browser must not override a deliberate click elsewhere.
+  if (active !== field && active !== document.body && active !== document.documentElement) return;
+  field.focus({ preventScroll: true });
+  if (typeof saved.start === "number" && typeof saved.end === "number") {
+    field.setSelectionRange(saved.start, saved.end, saved.direction || "none");
+  }
+}
+
+function bindTransactionFocus() {
+  document.addEventListener("focusin", (event) => {
+    if (el("transactionView")?.contains(event.target)
+      && event.target.matches("input:not([type='hidden']), select, textarea")) {
+      rememberTransactionFocus();
+    } else {
+      state.transactionFocus = null;
+    }
+  });
+  document.addEventListener("pointerdown", () => { state.transactionFocus = null; });
+  document.addEventListener("selectionchange", rememberTransactionFocus);
+  document.addEventListener("input", rememberTransactionFocus);
+  window.addEventListener("blur", rememberTransactionFocus);
+  const restore = () => window.requestAnimationFrame(restoreTransactionFocus);
+  window.addEventListener("focus", restore);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") rememberTransactionFocus();
+    else restore();
+  });
+}
+
 function setReportMessage(text, tone = "success") {
   state.reportMessage = text;
   state.reportMessageTone = tone;
@@ -880,6 +930,7 @@ function accountBreakdown(portfolio) {
 async function init() {
   bindNavigation();
   bindAuth();
+  bindTransactionFocus();
   if (isConfigured) {
     const { data } = await supabaseClient.auth.getSession();
     state.session = data.session;
@@ -889,8 +940,12 @@ async function init() {
 }
 
 function handleSessionChange(event, session) {
+  const previousUserId = state.session?.user?.id;
   state.session = session;
   if (event === "INITIAL_SESSION" || event === "TOKEN_REFRESHED") return;
+  // Supabase can repeat SIGNED_IN when an already signed-in browser tab regains focus.
+  if (event === "SIGNED_IN" && previousUserId && session?.user?.id === previousUserId
+    && state.member?.user_id === previousUserId) return;
   // Database requests inside this callback can wait on the auth lock it still holds.
   window.setTimeout(() => loadApp().catch(showAppLoadError), 0);
 }
@@ -973,6 +1028,7 @@ function showDemoMode() {
 }
 
 function showAuth() {
+  state.transactionFocus = null;
   hideBootScreen();
   document.body.classList.add("auth-only");
   el("authCard").classList.remove("hidden");
@@ -1145,7 +1201,7 @@ function renderIcons() {
   window.lucide.createIcons({ attrs: { "aria-hidden": "true", "stroke-width": 1.7 } });
 }
 
-function renderAll() {
+function renderAll({ preserveTransactionForm = false } = {}) {
   hideBootScreen();
   document.body.classList.remove("auth-only");
   document.title = "Benji and Angie's Investment Portfolio";
@@ -1157,7 +1213,13 @@ function renderAll() {
   }
   renderDashboard(portfolio);
   renderHoldings(portfolio);
-  renderTransaction(portfolio);
+  if (preserveTransactionForm && el("equityForm")) {
+    el("transactionView").querySelectorAll("form").forEach((form) => {
+      form.dispatchEvent(new CustomEvent("portfolio-prices-updated", { detail: portfolio }));
+    });
+  } else {
+    renderTransaction(portfolio);
+  }
   renderLedger(portfolio);
   renderReports();
   renderAudit();
@@ -1856,7 +1918,7 @@ async function refreshMarketPrices(options = {}) {
       try {
         const data = await state.marketRefreshPromise;
         await reloadMarketPrices();
-        renderAll();
+        renderAll({ preserveTransactionForm: true });
         const refreshedPortfolio = calculatePortfolio();
         const complete = data?.complete === true && marketDataHealth(refreshedPortfolio).complete;
         setMarketRefreshMessage(
@@ -1922,7 +1984,7 @@ async function refreshMarketPrices(options = {}) {
     }
     const skipped = data?.skipped?.length ? ` ${data.skipped.length} price${data.skipped.length === 1 ? "" : "s"} unavailable.` : "";
     if (!options.quiet || options.auto) {
-      renderAll();
+      renderAll({ preserveTransactionForm: true });
     }
     if (!options.quiet || options.auto) {
       const message = complete
@@ -2096,13 +2158,13 @@ function wireTransactionForms(portfolio) {
   restoreTransactionDraft(cashForm, "cash");
   wireTransactionDraft(equityForm, "equity");
   wireTransactionDraft(cashForm, "cash");
-  equityForm.addEventListener("submit", (event) => submitEquity(event, portfolio));
-  cashForm.addEventListener("submit", (event) => submitCash(event, portfolio));
+  equityForm.addEventListener("submit", (event) => submitEquity(event, calculatePortfolio()));
+  cashForm.addEventListener("submit", (event) => submitCash(event, calculatePortfolio()));
   setupManualForm(manualForm, portfolio);
   restoreTransactionDraft(manualForm, "manual");
   wireTransactionDraft(manualForm, "manual");
   const cashConfirmForm = el("cashConfirmForm");
-  if (cashConfirmForm) cashConfirmForm.addEventListener("submit", (event) => submitCashConfirmation(event, portfolio));
+  if (cashConfirmForm) cashConfirmForm.addEventListener("submit", (event) => submitCashConfirmation(event, calculatePortfolio()));
   el("cashConfirmDisregard")?.addEventListener("click", () => {
     state.pendingCashConfirm = null;
     setSaveMessage("cash", `Cash confirmation skipped at ${shortUkTime()} UK.`, "warning");
@@ -2173,6 +2235,10 @@ function wireTransactionPreview(form, portfolio) {
     }
   };
   ["input", "change"].forEach((eventName) => form.addEventListener(eventName, update));
+  form.addEventListener("portfolio-prices-updated", (event) => {
+    portfolio = event.detail;
+    update();
+  });
   update();
 }
 
@@ -2192,7 +2258,11 @@ function setupManualForm(form, portfolio) {
   form.elements.account.addEventListener("change", update);
   form.elements.currency.addEventListener("change", update);
   form.elements.value.addEventListener("input", update);
-  form.addEventListener("submit", (event) => submitManual(event, portfolio));
+  form.addEventListener("portfolio-prices-updated", (event) => {
+    portfolio = event.detail;
+    update();
+  });
+  form.addEventListener("submit", (event) => submitManual(event, calculatePortfolio()));
   update();
 }
 
@@ -3050,7 +3120,7 @@ function closeShellMenu(menuId, buttonId) {
 }
 
 function showView(view) {
-  document.querySelectorAll(".view").forEach((section) => section.classList.add("hidden"));
+  document.querySelectorAll(".view").forEach((section) => section.classList.toggle("hidden", section.id !== `${view}View`));
   document.querySelectorAll(".nav").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   el("mobileMoreButton")?.classList.toggle("active", view === "reports" || view === "audit");
   const titles = {
